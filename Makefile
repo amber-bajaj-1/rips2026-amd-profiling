@@ -131,11 +131,14 @@ device_to_routing_graph: \
 routes_to_phys: \
 		post-process/routes_to_phys.cpp \
 		pre-process/gzip_io.hpp \
-		pre-process/import_policy.hpp
+		pre-process/import_policy.hpp \
+		$(SCHEMA_DIR)/PhysicalNetlist.capnp.c++ \
+		$(SCHEMA_DIR)/References.capnp.c++
 	$(require_schema_dir)
 	$(CXX) $(CXX_FLAGS) $(INTERCHANGE_CPPFLAGS) -I"$(SCHEMA_DIR)" \
 		post-process/routes_to_phys.cpp \
 		"$(SCHEMA_DIR)/PhysicalNetlist.capnp.c++" \
+		"$(SCHEMA_DIR)/References.capnp.c++" \
 		$(INTERCHANGE_LIBS) -o $@
 
 define require_run_inputs
