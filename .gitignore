@@ -1,0 +1,8 @@
+/Makefile.local
+/PathFinderFile
+/pathfinder
+/interchange_to_csr
+/device_to_routing_graph
+/routes_to_phys
+/*.devicegraph
+/*.pathfinder-work*
