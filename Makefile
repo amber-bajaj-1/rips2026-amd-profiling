@@ -52,7 +52,7 @@ PROFILE_LABEL ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK),custom)
 PROFILE_RUN ?= $(shell date +%Y%m%d-%H%M%S)
 PROFILE_OUTPUT_DIR ?= $(PROFILE_ROOT)/$(PROFILE_LABEL)/$(PROFILE_RUN)
 PROFILE_OUTPUT_PHYS ?= $(PROFILE_OUTPUT_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
-PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --output-format csv --output-directory $(PROFILE_OUTPUT_DIR) --
+PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_OUTPUT_DIR) --
 
 DELTA_SOURCES := \
 	delta_stepping/delta_stepping.cpp
