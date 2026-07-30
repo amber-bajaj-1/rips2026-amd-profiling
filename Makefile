@@ -10,7 +10,6 @@ ROCTX_LIBRARY ?= $(ROCM_LIB_DIR)/librocprofiler-sdk-roctx.so
 
 HIPCC ?= $(if $(wildcard $(ROCM_PATH)/bin/hipcc),$(ROCM_PATH)/bin/hipcc,hipcc)
 ROCPROFV3 ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprofv3),$(ROCM_PATH)/bin/rocprofv3,rocprofv3)
-ROCPROF_COMPUTE ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprof-compute),$(ROCM_PATH)/bin/rocprof-compute,rocprof-compute)
 CXX ?= g++
 
 HIP_FLAGS ?= -std=c++17 -O3 -x hip
@@ -60,26 +59,9 @@ PROFILE_COUNTER_DIR ?= $(PROFILE_OUTPUT_DIR)/counters
 PROFILE_OUTPUT_PHYS ?= $(PROFILE_RUNTIME_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
 PROFILE_COUNTER_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
 PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_RUNTIME_DATA_DIR) --
-COUNTER_BACKEND ?= rocprofv3
 COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx1150-pmcs.yaml
-ifneq ($(filter %/profiling-config/gfx1150-pmcs.txt,$(COUNTER_INPUT)),)
-COUNTER_INPUT := $(CURDIR)/profiling-config/gfx1150-pmcs.yaml
-endif
-
-ifeq ($(COUNTER_BACKEND),rocprofv3)
 PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprofv3-pmc
-COUNTER_PROFILE_TOOL ?= $(ROCPROFV3)
 COUNTER_PROFILE_PREFIX ?= $(ROCPROFV3) --input $(COUNTER_INPUT) --output-format csv --output-directory $(PROFILE_COUNTER_DATA_DIR) --
-else ifeq ($(COUNTER_BACKEND),rocprof-compute)
-PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprof-compute
-COUNTER_PROFILE_TOOL ?= $(ROCPROF_COMPUTE)
-ROCPROF_COMPUTE_PROFILE_ARGS ?= -b 2 --no-roof --format-rocprof-output csv
-ROCPROF_COMPUTE_ANALYZE_ARGS ?= -b 2
-COUNTER_PROFILE_PREFIX ?= $(ROCPROF_COMPUTE) profile --output-directory $(PROFILE_COUNTER_DATA_DIR) $(ROCPROF_COMPUTE_PROFILE_ARGS) --
-COUNTER_ANALYSIS_OUTPUT_NAME ?= system-sol
-else
-$(error unsupported COUNTER_BACKEND '$(COUNTER_BACKEND)'; use rocprofv3 or rocprof-compute)
-endif
 
 DELTA_SOURCES := \
 	delta_stepping/delta_stepping.cpp
@@ -96,7 +78,7 @@ PREPROCESS_HEADERS := \
 	pre-process/import_policy.hpp
 
 .PHONY: all router pipeline interchange-tools device-graph help run \
-	profile profile-counters profile-diagnostics profile-all clean
+	profile profile-counters profile-all clean
 
 .NOTPARALLEL: profile-all
 
@@ -216,41 +198,20 @@ profile: pipeline device-graph
 
 profile-counters: pipeline device-graph
 	$(require_run_inputs)
-	@command -v "$(COUNTER_PROFILE_TOOL)" >/dev/null 2>&1 || \
-		{ echo "$(COUNTER_PROFILE_TOOL) is unavailable; run ./setup-tpe.sh first."; exit 2; }
-ifeq ($(COUNTER_BACKEND),rocprofv3)
+	@command -v "$(ROCPROFV3)" >/dev/null 2>&1 || \
+		{ echo "rocprofv3 is unavailable at $(ROCPROFV3); run ./setup-tpe.sh first."; exit 2; }
 	@test -f "$(COUNTER_INPUT)" || \
 		{ echo "Hardware-counter input file not found: $(COUNTER_INPUT)"; exit 2; }
-endif
 	@mkdir -p "$(PROFILE_COUNTER_DIR)" "$(dir $(PROFILE_COUNTER_OUTPUT_PHYS))"
-	@echo "Hardware-counter backend: $(COUNTER_BACKEND)"
 	@echo "Hardware-counter profiling output: $(PROFILE_COUNTER_DIR)"
+	@echo "Counter configuration: $(COUNTER_INPUT)"
 	@$(call execute_profile_pipeline,$(COUNTER_PROFILE_PREFIX),$(PROFILE_COUNTER_OUTPUT_PHYS)) \
 		2>&1 | tee "$(PROFILE_COUNTER_DIR)/pathfinder-wrapper.log"
 	@test -d "$(PROFILE_COUNTER_DATA_DIR)" || \
-		{ echo "$(COUNTER_BACKEND) did not create $(PROFILE_COUNTER_DATA_DIR)"; exit 2; }
-ifeq ($(COUNTER_BACKEND),rocprof-compute)
-	@echo "Analyzing System Speed-of-Light counters"
-	@cd "$(PROFILE_COUNTER_DIR)" && \
-		"$(ROCPROF_COMPUTE)" analyze \
-			--path "$(PROFILE_COUNTER_DATA_DIR)" \
-			$(ROCPROF_COMPUTE_ANALYZE_ARGS) \
-			--output-format csv \
-			--output-name "$(COUNTER_ANALYSIS_OUTPUT_NAME)" \
-			2>&1 | tee "system-sol-analysis.log"
-else
+		{ echo "rocprofv3 did not create $(PROFILE_COUNTER_DATA_DIR)"; exit 2; }
 	@echo "Raw and derived PMC data: $(PROFILE_COUNTER_DATA_DIR)"
-endif
 
-# Re-enter make so COUNTER_BACKEND is set before the backend-specific
-# variables and recipes above are evaluated. This target intentionally ignores
-# a rocprofv3 default from Makefile.local.
-profile-diagnostics:
-	+@$(MAKE) --no-print-directory profile-counters \
-		COUNTER_BACKEND=rocprof-compute \
-		PROFILE_OUTPUT_DIR="$(PROFILE_OUTPUT_DIR)"
-
-profile-all: profile profile-diagnostics
+profile-all: profile profile-counters
 	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
 
 help:
@@ -267,13 +228,10 @@ help:
 	@echo "Collect the runtime trace and timing statistics:"
 	@echo "  make profile BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "Collect gfx1150 hardware counters with rocprofv3:"
+	@echo "Collect focused gfx1150 hot-kernel counters with rocprofv3:"
 	@echo "  make profile-counters BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "Collect VALU and wave-wait diagnostics with rocprof-compute:"
-	@echo "  make profile-diagnostics BENCHMARK=logicnets_jscl"
-	@echo
-	@echo "Collect the runtime trace and diagnostics sequentially:"
+	@echo "Collect one runtime trace and four counter passes sequentially:"
 	@echo "  make profile-all BENCHMARK=logicnets_jscl"
 	@echo
 	@echo "All profiling output is written below:"

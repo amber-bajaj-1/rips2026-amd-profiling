@@ -17,9 +17,8 @@ cd "$RIPS_ROOT/rips2026-amd-profiling"
 
 Setup downloads the `benchmarks-v1` release asset, extracts it into
 `benchmarks/`, compiles the pipeline, and generates the routing device graph
-there. It also verifies `rocprofv3`; `rocprof-compute` is optional because its
-profile mode does not support every AUP GPU. An interrupted benchmark download
-resumes when setup is run again.
+there. It also verifies `rocprofv3`. An interrupted benchmark download resumes
+when setup is run again.
 
 ## 2. Choose a benchmark
 
@@ -70,8 +69,9 @@ make profile-all BENCHMARK="$BENCHMARK"
 ```
 
 The combined target collects the runtime trace first, then uses
-`rocprof-compute` System Speed-of-Light analysis for VALU and wave-wait
-diagnostics.
+four focused `rocprofv3` passes for hot-kernel diagnostics. The inner
+PathFinder therefore executes five times: once for timing and once for each
+counter pass.
 
 ### Recommended 100-net profile
 
@@ -93,17 +93,24 @@ profiler results under:
 profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
 ```
 
-Runtime traces are under `runtime/rocprofv3/`. System Speed-of-Light profiling
-data and analyzed CSV files are under `counters/rocprof-compute/` and
-`counters/system-sol/`. These results include the gfx115x VALU and wave-wait
-diagnostics when they are supported by the detected GPU and ROCm installation.
+Runtime traces are under `runtime/rocprofv3/`. Hardware-counter CSV files are
+under `counters/rocprofv3-pmc/pass_1/` through `pass_4/`. The passes collect
+only:
 
-Collect the raw `rocprofv3` PMC passes separately when needed:
+| Pass | Metric | Diagnostic |
+|---:|---|---|
+| 1 | `VALUInsts` | Vector-ALU instruction activity |
+| 2 | `MeanOccupancyPerActiveCU` | Mean resident-wave occupancy on active CUs |
+| 3 | `L2CacheHit` | L2 cache hit rate |
+| 4 | `SQ_WAIT_ANY`, `SQ_WAVE_CYCLES` | Wait cycles and their wave-cycle denominator |
 
-```bash
-make profile-counters \
-  BENCHMARK="$BENCHMARK"
-```
+Counter collection is restricted to the relaxation, cooperative controller,
+touched-state reset, predecessor-materialization, and queue-flag-clear kernel
+families. Runtime-trace timings remain the source for kernel time allocation;
+counter-pass timings are diagnostic because PMC collection perturbs execution.
+If the runtime trace identifies a different hot kernel, copy the supplied YAML,
+adjust its `kernel_include_regex` values, and select it with
+`COUNTER_INPUT=/absolute/path/to/custom.yaml`.
 
 List the generated files with:
 

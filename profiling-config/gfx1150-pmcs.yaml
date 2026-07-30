@@ -1,18 +1,17 @@
+# Keep the derived metrics in separate jobs because each can expand to several
+# architecture-specific events. The wait numerator and denominator deliberately
+# share one pass so their ratio comes from the same execution.
 jobs:
   - pmc:
       - VALUInsts
-      - SALUInsts
-      - SFetchInsts
-      - Wavefronts
+    kernel_include_regex: ".*(relax_light_edges_kernel|relax_heavy_edges_kernel|cooperative_delta_controller_kernel|reset_.*touched_vertices_kernel|materialize_predecessors_kernel|clear_flags_from_queue_kernel).*"
   - pmc:
       - MeanOccupancyPerActiveCU
-      - OccupancyPercent
-      - GPUBusy
-      - MemUnitBusy
+    kernel_include_regex: ".*(relax_light_edges_kernel|relax_heavy_edges_kernel|cooperative_delta_controller_kernel|reset_.*touched_vertices_kernel|materialize_predecessors_kernel|clear_flags_from_queue_kernel).*"
   - pmc:
       - L2CacheHit
-  - pmc:
-      - SQ_INSTS_VALU
+    kernel_include_regex: ".*(relax_light_edges_kernel|relax_heavy_edges_kernel|cooperative_delta_controller_kernel|reset_.*touched_vertices_kernel|materialize_predecessors_kernel|clear_flags_from_queue_kernel).*"
   - pmc:
       - SQ_WAIT_ANY
       - SQ_WAVE_CYCLES
+    kernel_include_regex: ".*(relax_light_edges_kernel|relax_heavy_edges_kernel|cooperative_delta_controller_kernel|reset_.*touched_vertices_kernel|materialize_predecessors_kernel|clear_flags_from_queue_kernel).*"
