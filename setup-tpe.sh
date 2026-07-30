@@ -2,26 +2,56 @@
 set -Eeuo pipefail
 
 # Prepare an AMD University Program cloud instance for building and profiling
-# the Delta-Stepping PathFinder pipeline. This script intentionally stops after
-# downloading assets, generating the device graph, and compiling all binaries.
-# It never invokes sudo or a system package manager.
+# the Delta-Stepping PathFinder pipeline from the bundled benchmark archive.
 
 readonly PROJECT_NAME="rips2026-amd-profiling"
 readonly PROJECT_REPO_URL="${PROJECT_REPO_URL:-https://github.com/amber-bajaj-1/rips2026-amd-profiling.git}"
-readonly CONTEST_REPO_URL="${CONTEST_REPO_URL:-https://github.com/Xilinx/fpga24_routing_contest.git}"
-readonly WORKSPACE_ROOT="${AUP_WORKSPACE_ROOT:-$HOME}"
-readonly CONTEST_DIR="${CONTEST_DIR:-$WORKSPACE_ROOT/fpga24_routing_contest}"
-readonly PROJECT_DIR="$CONTEST_DIR/$PROJECT_NAME"
-readonly LOCAL_PREFIX="${LOCAL_PREFIX:-$HOME/.local/rips2026-amd-profiling}"
-readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rips2026-amd-profiling"
-readonly JAVA_HOME_SETUP="${RIPS_JAVA_HOME:-$HOME/.local/opt/temurin-21}"
+readonly SCHEMA_REPO_URL="${SCHEMA_REPO_URL:-https://github.com/chipsalliance/fpga-interchange-schema.git}"
+readonly SCHEMA_REVISION="${SCHEMA_REVISION:-c985b4648e66414b250261c1ba4cbe45a2971b1c}"
+readonly GIT_LFS_VERSION="3.7.1"
 readonly CAPNP_VERSION="${CAPNP_VERSION:-1.4.0}"
 readonly ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
 readonly DEVICE_NAME="xcvu3p"
-readonly DEVICE_FILE="$CONTEST_DIR/$DEVICE_NAME.device"
-readonly DEVICE_GRAPH="$PROJECT_DIR/$DEVICE_NAME.full-poc-base-wire.devicegraph"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly JOBS="${JOBS:-$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)}"
+
+if (( $# > 1 )); then
+  printf 'Usage: %s [ROOT]\n' "$(basename "$0")" >&2
+  exit 2
+fi
+
+root_input="${1:-${RIPS_ROOT:-$PWD}}"
+mkdir -p -- "$root_input"
+readonly RIPS_ROOT="$(cd -- "$root_input" && pwd -P)"
+[[ "$RIPS_ROOT" != "/" ]] || {
+  printf 'ROOT must not be the filesystem root.\n' >&2
+  exit 2
+}
+
+readonly PROJECT_DIR="$RIPS_ROOT/$PROJECT_NAME"
+readonly LOCAL_PREFIX="${LOCAL_PREFIX:-$RIPS_ROOT/.local/$PROJECT_NAME}"
+readonly CACHE_DIR="${RIPS_CACHE_DIR:-$RIPS_ROOT/.cache/$PROJECT_NAME}"
+readonly BENCHMARK_DIR="$PROJECT_DIR/benchmarks"
+readonly BENCHMARK_ARCHIVE="$PROJECT_DIR/$DEVICE_NAME.tar.gz"
+readonly DEVICE_FILE="$BENCHMARK_DIR/$DEVICE_NAME.device"
+readonly DEVICE_GRAPH="$BENCHMARK_DIR/$DEVICE_NAME.full-poc-base-wire.devicegraph"
+readonly SCHEMA_REPO_DIR="$PROJECT_DIR/dependencies/fpga-interchange-schema"
+readonly SCHEMA_DIR="$SCHEMA_REPO_DIR/interchange"
+readonly -a BENCHMARKS=(
+  logicnets_jscl
+  boom_med_pb
+  vtr_mcml
+  rosetta_fd
+  corundum_25g
+  finn_radioml
+  vtr_lu64peeng
+  corescore_500
+  corescore_500_pb
+  mlcad_d181_lefttwo3rds
+  koios_dla_like_large
+  boom_soc
+  ispd16_example2
+)
 
 log() {
   printf '\n[%s] %s\n' "$PROJECT_NAME" "$*"
@@ -39,9 +69,10 @@ require_command() {
 
 validate_managed_paths() {
   local path
-  for path in "$LOCAL_PREFIX" "$CACHE_DIR" "$JAVA_HOME_SETUP"; do
-    [[ "$path" == "$HOME/"* && "$path" != *"/../"* ]] ||
-      die "Managed setup path must be a direct descendant of HOME: $path"
+  [[ -w "$RIPS_ROOT" ]] || die "The selected root is not writable: $RIPS_ROOT"
+  for path in "$PROJECT_DIR" "$LOCAL_PREFIX" "$CACHE_DIR"; do
+    [[ "$path" == "$RIPS_ROOT/"* && "$path" != *"/../"* ]] ||
+      die "Managed setup path must be inside RIPS_ROOT: $path"
   done
 }
 
@@ -55,23 +86,50 @@ download() {
 validate_base_tools() {
   log "Validating the non-privileged AUP build environment"
   local command_name
-  for command_name in curl git make g++ python3 tar; do
+  for command_name in curl git make g++ sha256sum tar; do
     require_command "$command_name"
   done
 }
 
-ensure_python_pip() {
-  if python3 -m pip --version >/dev/null 2>&1; then
+install_git_lfs() {
+  if command -v git-lfs >/dev/null 2>&1 &&
+     git lfs version >/dev/null 2>&1; then
+    log "Git LFS is already available"
     return
   fi
 
-  log "Installing pip in the current user's home directory"
-  mkdir -p "$CACHE_DIR"
-  local get_pip="$CACHE_DIR/get-pip.py"
-  download "https://bootstrap.pypa.io/get-pip.py" "$get_pip"
-  python3 "$get_pip" --user
-  python3 -m pip --version >/dev/null 2>&1 ||
-    die "pip could not be installed without administrator privileges."
+  local git_lfs_arch
+  local archive_sha256
+  case "$(uname -m)" in
+    x86_64 | amd64)
+      git_lfs_arch="amd64"
+      archive_sha256="1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08"
+      ;;
+    aarch64 | arm64)
+      git_lfs_arch="arm64"
+      archive_sha256="73a9c90eeb4312133a63c3eaee0c38c019ea7bfa0953d174809d25b18588dd8d"
+      ;;
+    *) die "Unsupported Git LFS architecture: $(uname -m)" ;;
+  esac
+
+  log "Installing Git LFS $GIT_LFS_VERSION under the selected root"
+  mkdir -p "$CACHE_DIR" "$LOCAL_PREFIX/bin"
+  local archive="$CACHE_DIR/git-lfs-linux-$git_lfs_arch-v$GIT_LFS_VERSION.tar.gz"
+  download \
+    "https://github.com/git-lfs/git-lfs/releases/download/v$GIT_LFS_VERSION/git-lfs-linux-$git_lfs_arch-v$GIT_LFS_VERSION.tar.gz" \
+    "$archive"
+  printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum --check --status ||
+    die "Git LFS archive checksum verification failed."
+
+  local extract_dir
+  extract_dir="$(mktemp -d "$CACHE_DIR/git-lfs.XXXXXX")"
+  tar -xzf "$archive" -C "$extract_dir"
+  local git_lfs_binary
+  git_lfs_binary="$(find "$extract_dir" -type f -name git-lfs -print -quit)"
+  [[ -n "$git_lfs_binary" ]] || die "The Git LFS archive did not contain git-lfs."
+  cp -- "$git_lfs_binary" "$LOCAL_PREFIX/bin/git-lfs"
+  chmod +x "$LOCAL_PREFIX/bin/git-lfs"
+  rm -rf -- "$extract_dir"
 }
 
 install_zlib() {
@@ -83,7 +141,7 @@ install_zlib() {
     return
   fi
 
-  log "Building zlib $ZLIB_VERSION in the current user's home directory"
+  log "Building zlib $ZLIB_VERSION under the selected root"
   mkdir -p "$CACHE_DIR" "$LOCAL_PREFIX/src"
   local archive="$CACHE_DIR/zlib-$ZLIB_VERSION.tar.gz"
   local source_dir="$LOCAL_PREFIX/src/zlib-$ZLIB_VERSION"
@@ -98,39 +156,6 @@ install_zlib() {
     make -j"$JOBS"
     make install
   )
-}
-
-install_java_21() {
-  if [[ -x "$JAVA_HOME_SETUP/bin/java" ]] &&
-     "$JAVA_HOME_SETUP/bin/java" -version 2>&1 |
-       grep -Eq 'version "21[.]|openjdk version "21[.]'; then
-    log "Java 21 is already installed at $JAVA_HOME_SETUP"
-    return
-  fi
-
-  local java_arch
-  case "$(uname -m)" in
-    x86_64 | amd64) java_arch="x64" ;;
-    aarch64 | arm64) java_arch="aarch64" ;;
-    *) die "Unsupported Java download architecture: $(uname -m)" ;;
-  esac
-
-  log "Installing a local Java 21 runtime"
-  mkdir -p "$CACHE_DIR" "$(dirname "$JAVA_HOME_SETUP")"
-  local archive="$CACHE_DIR/temurin-21-linux-$java_arch.tar.gz"
-  local extract_dir
-  extract_dir="$(mktemp -d "$CACHE_DIR/java-21.XXXXXX")"
-  download \
-    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/$java_arch/jdk/hotspot/normal/eclipse" \
-    "$archive"
-  tar -xzf "$archive" -C "$extract_dir"
-
-  local extracted_jdk
-  extracted_jdk="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-  [[ -n "$extracted_jdk" ]] || die "The Java archive did not contain a JDK."
-  rm -rf -- "$JAVA_HOME_SETUP"
-  mv -- "$extracted_jdk" "$JAVA_HOME_SETUP"
-  rm -rf -- "$extract_dir"
 }
 
 install_capnproto() {
@@ -190,7 +215,7 @@ locate_rocprofv3() {
     )"
   fi
   [[ -n "$candidate" ]] ||
-    die "rocprofv3 was not found in the preinstalled ROCm tree at $ROCM_ROOT. This setup never uses sudo; select an AUP image that includes ROCprofiler-SDK/rocprofv3 or set ROCM_PATH to that installation."
+    die "rocprofv3 was not found at $ROCM_ROOT. Select an AUP image that includes ROCprofiler-SDK or set ROCM_PATH to that installation."
   ROCPROFV3_PATH="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename "$candidate")"
   export ROCPROFV3_PATH
   log "Using preinstalled rocprofv3 at $ROCPROFV3_PATH"
@@ -253,125 +278,143 @@ locate_roctx_installation() {
 }
 
 persist_environment() {
-  local environment_dir="$HOME/.config/$PROJECT_NAME"
-  local environment_file="$environment_dir/environment.sh"
-  mkdir -p "$environment_dir"
+  local environment_file="$PROJECT_DIR/environment.sh"
   cat >"$environment_file" <<EOF
-export JAVA_HOME="$JAVA_HOME_SETUP"
+export RIPS_ROOT="$RIPS_ROOT"
 export LOCAL_PREFIX="$LOCAL_PREFIX"
 export ROCM_PATH="$ROCM_ROOT"
 export ROCPROFV3="$ROCPROFV3_PATH"
-export PATH="$HOME/.local/bin:\$JAVA_HOME/bin:\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:$(dirname "$ROCPROFV3_PATH"):\$PATH"
+export PATH="\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:$(dirname "$ROCPROFV3_PATH"):\$PATH"
 export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:$ROCM_LIBRARY_DIR:\${LD_LIBRARY_PATH:-}"
 export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:\${PKG_CONFIG_PATH:-}"
-export RIPS_CONTEST_DIR="$CONTEST_DIR"
 export RIPS_PROFILING_DIR="$PROJECT_DIR"
-export RIPS_SCHEMA_DIR="$CONTEST_DIR/fpga-interchange-schema/interchange"
+export RIPS_BENCHMARK_DIR="$BENCHMARK_DIR"
+export RIPS_SCHEMA_DIR="$SCHEMA_DIR"
 EOF
-
-  touch "$HOME/.bashrc"
-  local source_line="source \"$environment_file\""
-  grep -qxF "$source_line" "$HOME/.bashrc" ||
-    printf '%s\n' "$source_line" >>"$HOME/.bashrc"
-}
-
-prepare_contest_repository() {
-  if [[ ! -d "$CONTEST_DIR/.git" ]]; then
-    log "Cloning the FPGA'24 routing contest repository"
-    git clone --recurse-submodules "$CONTEST_REPO_URL" "$CONTEST_DIR"
-  else
-    log "Using the existing contest repository at $CONTEST_DIR"
-    git -C "$CONTEST_DIR" submodule update --init --recursive
-  fi
 }
 
 prepare_profiling_repository() {
   if [[ "$SCRIPT_DIR" == "$PROJECT_DIR" ]]; then
-    log "Profiling repository is already inside the contest repository"
+    log "Using the profiling repository at $PROJECT_DIR"
   elif [[ -e "$PROJECT_DIR" ]]; then
     log "Using the existing profiling repository at $PROJECT_DIR"
+    [[ -f "$PROJECT_DIR/Makefile" &&
+       -d "$PROJECT_DIR/delta_stepping" &&
+       -d "$PROJECT_DIR/routing" ]] ||
+      die "$PROJECT_DIR is not a valid $PROJECT_NAME repository."
   elif [[ -f "$SCRIPT_DIR/Makefile" &&
           -d "$SCRIPT_DIR/delta_stepping" &&
           -d "$SCRIPT_DIR/routing" ]]; then
-    log "Copying the current profiling working tree into the contest repository"
+    log "Copying the current profiling working tree into $RIPS_ROOT"
     cp -a -- "$SCRIPT_DIR" "$PROJECT_DIR"
   else
-    log "Cloning the profiling repository into the contest repository"
+    log "Cloning the profiling repository into $RIPS_ROOT"
     git clone "$PROJECT_REPO_URL" "$PROJECT_DIR"
   fi
 
-  mkdir -p "$PROJECT_DIR/profiling"
+  mkdir -p "$PROJECT_DIR/profiling" "$BENCHMARK_DIR" "$PROJECT_DIR/dependencies"
+  if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$PROJECT_DIR" lfs install --local
+    git -C "$PROJECT_DIR" lfs pull \
+      --include="$DEVICE_NAME.tar.gz" --exclude=""
+  fi
+}
+
+prepare_schema_repository() {
+  if [[ ! -d "$SCHEMA_REPO_DIR/.git" ]]; then
+    log "Cloning the FPGA Interchange schemas"
+    git clone "$SCHEMA_REPO_URL" "$SCHEMA_REPO_DIR"
+  else
+    log "Using the FPGA Interchange schemas at $SCHEMA_REPO_DIR"
+  fi
+
+  if ! git -C "$SCHEMA_REPO_DIR" cat-file -e "$SCHEMA_REVISION^{commit}" 2>/dev/null; then
+    git -C "$SCHEMA_REPO_DIR" fetch --depth 1 origin "$SCHEMA_REVISION"
+  fi
+  git -C "$SCHEMA_REPO_DIR" checkout --detach --quiet "$SCHEMA_REVISION"
 }
 
 prepare_java_schema() {
-  local java_schema="$CONTEST_DIR/fpga-interchange-schema/interchange/capnp/java.capnp"
+  local java_schema="$SCHEMA_DIR/capnp/java.capnp"
   mkdir -p "$(dirname "$java_schema")"
   if [[ ! -s "$java_schema" ]]; then
-    log "Downloading the Cap'n Proto Java schema without system package tools"
+    log "Downloading the Cap'n Proto Java schema"
     download \
       "https://raw.githubusercontent.com/capnproto/capnproto-java/master/compiler/src/main/schema/capnp/java.capnp" \
       "$java_schema"
   fi
 }
 
-download_benchmarks() {
-  log "Preparing contest dependencies and downloading all benchmarks"
-  make -C "$CONTEST_DIR" setup
+place_archive_asset() {
+  local filename="$1"
+  local destination="$BENCHMARK_DIR/$filename"
+  [[ -s "$destination" ]] && return
 
-  local benchmarks=(
-    logicnets_jscl
-    boom_med_pb
-    vtr_mcml
-    rosetta_fd
-    corundum_25g
-    finn_radioml
-    vtr_lu64peeng
-    corescore_500
-    corescore_500_pb
-    mlcad_d181_lefttwo3rds
-    koios_dla_like_large
-    boom_soc
-    ispd16_example2
-  )
+  local source
+  source="$(find "$BENCHMARK_DIR" -type f -name "$filename" -print -quit)"
+  [[ -n "$source" ]] || die "The archive is missing $filename"
+  cp -- "$source" "$destination"
+}
+
+benchmarks_are_ready() {
+  [[ -s "$DEVICE_FILE" ]] || return 1
   local benchmark
-  for benchmark in "${benchmarks[@]}"; do
-    [[ -s "$CONTEST_DIR/${benchmark}_unrouted.phys" ]] ||
-      die "Missing benchmark physical netlist: ${benchmark}_unrouted.phys"
-    [[ -s "$CONTEST_DIR/${benchmark}.netlist" ]] ||
-      die "Missing benchmark logical netlist: ${benchmark}.netlist"
+  for benchmark in "${BENCHMARKS[@]}"; do
+    [[ -s "$BENCHMARK_DIR/${benchmark}_unrouted.phys" &&
+       -s "$BENCHMARK_DIR/${benchmark}.netlist" ]] ||
+      return 1
   done
 }
 
-prepare_device() {
-  if [[ ! -s "$DEVICE_FILE" ]]; then
-    local supplied_device="${AUP_DEVICE_FILE:-$WORKSPACE_ROOT/$DEVICE_NAME.device}"
-    if [[ -s "$supplied_device" ]]; then
-      log "Copying the supplied $DEVICE_NAME device"
-      cp -- "$supplied_device" "$DEVICE_FILE"
-    else
-      log "Generating $DEVICE_NAME.device through RapidWright"
-      make -C "$CONTEST_DIR" "$DEVICE_NAME.device"
-    fi
-  else
-    log "Using the existing device at $DEVICE_FILE"
+extract_benchmarks() {
+  if benchmarks_are_ready; then
+    log "Using the extracted device and benchmarks at $BENCHMARK_DIR"
+    return
   fi
-  [[ -s "$DEVICE_FILE" ]] || die "Failed to prepare $DEVICE_FILE"
+
+  [[ -s "$BENCHMARK_ARCHIVE" ]] ||
+    die "Missing benchmark archive: $BENCHMARK_ARCHIVE"
+  tar -tzf "$BENCHMARK_ARCHIVE" >/dev/null 2>&1 ||
+    die "$BENCHMARK_ARCHIVE is not a readable gzip-compressed tar archive."
+
+  local archive_entry
+  while IFS= read -r archive_entry; do
+    [[ "$archive_entry" != /* &&
+       "$archive_entry" != ".." &&
+       "$archive_entry" != ../* &&
+       "$archive_entry" != */../* &&
+       "$archive_entry" != */.. ]] ||
+      die "Unsafe path in $BENCHMARK_ARCHIVE: $archive_entry"
+  done < <(tar -tzf "$BENCHMARK_ARCHIVE")
+
+  log "Extracting xcvu3p device and benchmark files into $BENCHMARK_DIR"
+  tar -xzf "$BENCHMARK_ARCHIVE" -C "$BENCHMARK_DIR" \
+    --no-same-owner --no-same-permissions
+
+  place_archive_asset "$DEVICE_NAME.device"
+  local benchmark
+  for benchmark in "${BENCHMARKS[@]}"; do
+    place_archive_asset "${benchmark}_unrouted.phys"
+    place_archive_asset "${benchmark}.netlist"
+    [[ -s "$BENCHMARK_DIR/${benchmark}_unrouted.phys" ]] ||
+      die "Missing benchmark physical netlist: ${benchmark}_unrouted.phys"
+    [[ -s "$BENCHMARK_DIR/${benchmark}.netlist" ]] ||
+      die "Missing benchmark logical netlist: ${benchmark}.netlist"
+  done
+  [[ -s "$DEVICE_FILE" ]] || die "Missing device file: $DEVICE_FILE"
 }
 
 generate_cpp_schemas() {
-  local schema_dir="$CONTEST_DIR/fpga-interchange-schema/interchange"
   log "Generating FPGA Interchange C++ schemas"
   prepare_java_schema
   (
-    cd "$schema_dir"
+    cd "$SCHEMA_DIR"
     "$LOCAL_PREFIX/bin/capnp" compile -oc++ -I . \
       References.capnp \
       DeviceResources.capnp \
       LogicalNetlist.capnp \
       PhysicalNetlist.capnp
   )
-  SCHEMA_DIR="$schema_dir"
-  export SCHEMA_DIR
 }
 
 write_local_make_configuration() {
@@ -380,7 +423,10 @@ write_local_make_configuration() {
   log "Writing detected AUP build paths to $config_file"
   cat >"$config_file" <<EOF
 # Generated by setup-tpe.sh. This file is intentionally not committed.
-CONTEST_DIR := $CONTEST_DIR
+RIPS_ROOT := $RIPS_ROOT
+BENCHMARK_DIR := $BENCHMARK_DIR
+DEVICE_FILE := $DEVICE_FILE
+DEVICE_GRAPH := $DEVICE_GRAPH
 SCHEMA_DIR := $SCHEMA_DIR
 ROCM_PATH := $ROCM_ROOT
 ROCM_LIB_DIR := $ROCM_LIBRARY_DIR
@@ -412,55 +458,45 @@ compile_pipeline() {
 }
 
 generate_device_graph() {
-  if [[ -s "$DEVICE_GRAPH" && "${REBUILD_DEVICE_GRAPH:-0}" != "1" ]]; then
-    log "Using the existing preprocessed device graph at $DEVICE_GRAPH"
-    return
-  fi
-
-  log "Generating the preprocessed routing device graph"
-  "$PROJECT_DIR/device_to_routing_graph" \
-    "$DEVICE_FILE" \
-    "$DEVICE_GRAPH" \
-    --full-device
+  log "Preparing the preprocessed routing device graph"
+  make -C "$PROJECT_DIR" device-graph \
+    REBUILD_DEVICE_GRAPH="${REBUILD_DEVICE_GRAPH:-0}"
   [[ -s "$DEVICE_GRAPH" ]] || die "Device graph generation failed."
 }
 
 main() {
   validate_managed_paths
   validate_base_tools
-  ensure_python_pip
-
-  install_java_21
-  export JAVA_HOME="$JAVA_HOME_SETUP"
-  export PATH="$HOME/.local/bin:$JAVA_HOME/bin:$LOCAL_PREFIX/bin:$PATH"
-  export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:${LD_LIBRARY_PATH:-}"
-  export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+  install_git_lfs
+  export PATH="$LOCAL_PREFIX/bin:$PATH"
+  prepare_profiling_repository
+  extract_benchmarks
 
   install_zlib
   install_capnproto
+  export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+  export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+
   configure_rocm_environment
   require_command hipcc
   locate_rocprofv3
   locate_roctx_installation
-  persist_environment
 
-  prepare_contest_repository
-  prepare_profiling_repository
-  prepare_java_schema
-  download_benchmarks
-  prepare_device
+  prepare_schema_repository
   generate_cpp_schemas
+  persist_environment
   write_local_make_configuration
   compile_pipeline
   generate_device_graph
 
   log "Setup complete"
   printf '%s\n' \
-    "Contest repository: $CONTEST_DIR" \
+    "Root: $RIPS_ROOT" \
     "Profiling repository: $PROJECT_DIR" \
+    "Benchmarks: $BENCHMARK_DIR" \
     "Device graph: $DEVICE_GRAPH" \
     "rocprofv3: $ROCPROFV3_PATH" \
-    "All benchmarks and binaries are ready; no routing workload was started." \
+    "Environment: $PROJECT_DIR/environment.sh" \
     "Next: cd \"$PROJECT_DIR\" && make run BENCHMARK=logicnets_jscl" \
     "Profile: make profile BENCHMARK=logicnets_jscl"
 }

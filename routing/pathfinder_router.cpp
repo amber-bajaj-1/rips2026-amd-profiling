@@ -32,7 +32,7 @@ struct Options {
   std::filesystem::path output_phys;
   std::filesystem::path logical_netlist;
   std::filesystem::path device_graph =
-      "xcvu3p.full-poc-base-wire.devicegraph";
+      "benchmarks/xcvu3p.full-poc-base-wire.devicegraph";
   std::filesystem::path work_dir;
   bool work_dir_was_provided = false;
   bool keep_work_dir = false;
@@ -183,7 +183,7 @@ void print_usage(const char* program) {
       << "Options:\n"
       << "  --logical-netlist <path>       Override inferred .netlist path.\n"
       << "  --device-graph <path>          Precomputed routing graph. Env: DEVICE_ROUTING_GRAPH\n"
-      << "                                 Default: xcvu3p.full-poc-base-wire.devicegraph\n"
+      << "                                 Default: benchmarks/xcvu3p.full-poc-base-wire.devicegraph\n"
       << "  --work-dir <path>              Directory for temporary CSR/metadata/routes.\n"
       << "  --keep-work-dir                Do not remove temporary files.\n"
       << "  --interchange-to-csr <path>    Converter executable. Env: INTERCHANGE_TO_CSR\n"
@@ -230,7 +230,8 @@ Options parse_args(int argc, char** argv) {
   options.input_phys = argv[1];
   options.output_phys = argv[2];
   options.device_graph = env_or_default(
-      "DEVICE_ROUTING_GRAPH", "xcvu3p.full-poc-base-wire.devicegraph");
+      "DEVICE_ROUTING_GRAPH",
+      "benchmarks/xcvu3p.full-poc-base-wire.devicegraph");
   options.interchange_to_csr = env_or_default("INTERCHANGE_TO_CSR", "./interchange_to_csr");
   options.pathfinder = env_or_default("PATHFINDER_BIN", "./pathfinder");
   options.routes_to_phys = env_or_default("ROUTES_TO_PHYS", "./routes_to_phys");

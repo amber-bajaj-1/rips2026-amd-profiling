@@ -41,7 +41,7 @@
 //
 // Example use:
 //
-//   ./interchange_to_csr xcvu3p.full-poc-base-wire.devicegraph \
+//   ./interchange_to_csr benchmarks/xcvu3p.full-poc-base-wire.devicegraph \
 //     benchmarks/vtr_mcml_unrouted.phys \
 //     benchmarks/vtr_mcml.netlist \
 //     work/vtr_mcml_fpga.csrbin

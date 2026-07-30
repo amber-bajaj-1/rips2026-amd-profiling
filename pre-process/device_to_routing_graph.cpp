@@ -14,8 +14,8 @@
 //     -lcapnp -lkj -lz -o device_to_routing_graph
 //
 // Example use:
-//   ./device_to_routing_graph xcvu3p.device \
-//     xcvu3p.full-poc-base-wire.devicegraph --full-device
+//   ./device_to_routing_graph benchmarks/xcvu3p.device \
+//     benchmarks/xcvu3p.full-poc-base-wire.devicegraph --full-device
 
 #include "DeviceResources.capnp.h"
 #include "device_routing_graph.hpp"

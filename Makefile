@@ -16,8 +16,9 @@ HIP_FLAGS ?= -std=c++17 -O3 -x hip
 CXX_FLAGS ?= -std=c++17 -O3
 INTERCHANGE_CPPFLAGS ?=
 INTERCHANGE_LIBS ?= -lcapnp -lkj -lz
-CONTEST_DIR ?= $(abspath ..)
-SCHEMA_DIR ?= $(CONTEST_DIR)/fpga-interchange-schema/interchange
+RIPS_ROOT ?= $(abspath ..)
+BENCHMARK_DIR ?= $(CURDIR)/benchmarks
+SCHEMA_DIR ?= $(CURDIR)/dependencies/fpga-interchange-schema/interchange
 
 PATHFINDER_ENABLE_ROCTX ?= $(if $(filter none,$(ROCTX_STYLE)),0,1)
 PATHFINDER_ROCTX_FLAGS :=
@@ -39,10 +40,12 @@ PATHFINDER_ARGS ?=
 DELTA_ARG = $(if $(strip $(DELTA)),$(if $(filter 1,$(strip $(DELTA))),,--delta $(DELTA)))
 RUN_PATHFINDER_ARGS = $(DELTA_ARG) $(PATHFINDER_ARGS)
 PROFILE_PATHFINDER_ARGS = $(RUN_PATHFINDER_ARGS) --delta-telemetry
-DEVICE_GRAPH ?= $(CURDIR)/xcvu3p.full-poc-base-wire.devicegraph
-INPUT_PHYS ?= $(if $(strip $(BENCHMARK)),$(CONTEST_DIR)/$(BENCHMARK)_unrouted.phys,)
-OUTPUT_PHYS ?= $(if $(strip $(BENCHMARK)),$(CONTEST_DIR)/$(BENCHMARK)_PathFinderFile.phys,)
-LOGICAL_NETLIST ?= $(if $(strip $(BENCHMARK)),$(CONTEST_DIR)/$(BENCHMARK).netlist,)
+DEVICE_FILE ?= $(BENCHMARK_DIR)/xcvu3p.device
+DEVICE_GRAPH ?= $(BENCHMARK_DIR)/xcvu3p.full-poc-base-wire.devicegraph
+REBUILD_DEVICE_GRAPH ?= 0
+INPUT_PHYS ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK_DIR)/$(BENCHMARK)_unrouted.phys,)
+OUTPUT_PHYS ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK_DIR)/$(BENCHMARK)_PathFinderFile.phys,)
+LOGICAL_NETLIST ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK_DIR)/$(BENCHMARK).netlist,)
 
 PROFILE_ROOT ?= $(CURDIR)/profiling
 PROFILE_LABEL ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK),custom)
@@ -65,7 +68,7 @@ PREPROCESS_HEADERS := \
 	pre-process/gzip_io.hpp \
 	pre-process/import_policy.hpp
 
-.PHONY: all router pipeline interchange-tools help run profile clean
+.PHONY: all router pipeline interchange-tools device-graph help run profile clean
 
 all: router
 
@@ -74,6 +77,17 @@ router: PathFinderFile pathfinder
 pipeline: router interchange-tools
 
 interchange-tools: interchange_to_csr device_to_routing_graph routes_to_phys
+
+device-graph: device_to_routing_graph
+	@test -s "$(DEVICE_FILE)" || \
+		{ echo "Device file not found: $(DEVICE_FILE)"; exit 2; }
+	@if [[ ! -s "$(DEVICE_GRAPH)" || "$(REBUILD_DEVICE_GRAPH)" == "1" ]]; then \
+		echo "Generating device graph: $(DEVICE_GRAPH)"; \
+		mkdir -p "$(dir $(DEVICE_GRAPH))"; \
+		./device_to_routing_graph "$(DEVICE_FILE)" "$(DEVICE_GRAPH)" --full-device; \
+	else \
+		echo "Using device graph: $(DEVICE_GRAPH)"; \
+	fi
 
 PathFinderFile: routing/pathfinder_router.cpp
 	$(CXX) $(CXX_FLAGS) $< -o $@
@@ -150,7 +164,7 @@ define execute_pipeline
 		--device-graph "$(DEVICE_GRAPH)" $(PROFILE_PATHFINDER_ARGS)
 endef
 
-run: pipeline
+run: pipeline device-graph
 	$(require_run_inputs)
 	$(require_regular_output)
 	env PATHFINDER_PROFILE_COMMAND='' \
@@ -158,7 +172,7 @@ run: pipeline
 		--logical-netlist "$(LOGICAL_NETLIST)" \
 		--device-graph "$(DEVICE_GRAPH)" $(RUN_PATHFINDER_ARGS)
 
-profile: pipeline
+profile: pipeline device-graph
 	$(require_run_inputs)
 	@command -v "$(ROCPROFV3)" >/dev/null 2>&1 || \
 		{ echo "rocprofv3 is unavailable at $(ROCPROFV3); run ./setup-tpe.sh first."; exit 2; }
@@ -173,7 +187,7 @@ help:
 	@echo "Build the full conversion/routing/reconstruction pipeline:"
 	@echo "  make pipeline"
 	@echo
-	@echo "Run a contest benchmark without profiling:"
+	@echo "Run a bundled benchmark without profiling:"
 	@echo "  make run BENCHMARK=logicnets_jscl"
 	@echo "  Delta defaults to 1; use DELTA=auto or DELTA=<positive-number> to override it."
 	@echo
@@ -184,7 +198,7 @@ help:
 	@echo "  $(PROFILE_ROOT)/<benchmark>/<timestamp>/"
 	@echo "The profiled routed .phys file is written in the same run directory."
 	@echo
-	@echo "For a benchmark outside the contest naming convention:"
+	@echo "For a benchmark outside the bundled naming convention:"
 	@echo "  make run INPUT_PHYS=... LOGICAL_NETLIST=... OUTPUT_PHYS=..."
 	@echo "  make profile INPUT_PHYS=... LOGICAL_NETLIST=... PROFILE_LABEL=..."
 

@@ -1,4 +1,7 @@
 /Makefile.local
+/environment.sh
+/benchmarks/
+/dependencies/
 /PathFinderFile
 /pathfinder
 /interchange_to_csr

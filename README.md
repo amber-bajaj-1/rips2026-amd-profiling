@@ -5,15 +5,18 @@ Program (AUP) cloud.
 
 ## 1. Set up the AUP workspace
 
-Place `setup-tpe.sh` in `/home/jovyan`, then run:
+Choose a writable root directory, then run:
 
 ```bash
-cd /home/jovyan
+RIPS_ROOT=/path/to/your/workspace
 chmod +x setup-tpe.sh
-./setup-tpe.sh
-source /home/jovyan/.config/rips2026-amd-profiling/environment.sh
-cd /home/jovyan/fpga24_routing_contest/rips2026-amd-profiling
+./setup-tpe.sh "$RIPS_ROOT"
+source "$RIPS_ROOT/rips2026-amd-profiling/environment.sh"
+cd "$RIPS_ROOT/rips2026-amd-profiling"
 ```
+
+Setup extracts the repository's `xcvu3p.tar.gz` into `benchmarks/`, compiles
+the pipeline, and generates the routing device graph there.
 
 ## 2. Choose a benchmark
 
@@ -48,7 +51,7 @@ make run BENCHMARK="$BENCHMARK"
 The routed physical netlist is written to:
 
 ```text
-/home/jovyan/fpga24_routing_contest/<benchmark>_PathFinderFile.phys
+benchmarks/<benchmark>_PathFinderFile.phys
 ```
 
 ## 4. Run with profiling
