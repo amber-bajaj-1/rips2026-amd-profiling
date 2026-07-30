@@ -15,8 +15,9 @@ source "$RIPS_ROOT/rips2026-amd-profiling/environment.sh"
 cd "$RIPS_ROOT/rips2026-amd-profiling"
 ```
 
-Setup extracts the repository's `xcvu3p.tar.gz` into `benchmarks/`, compiles
-the pipeline, and generates the routing device graph there.
+Setup downloads the `benchmarks-v1` release asset, extracts it into
+`benchmarks/`, compiles the pipeline, and generates the routing device graph
+there. An interrupted benchmark download resumes when setup is run again.
 
 ## 2. Choose a benchmark
 
@@ -31,15 +32,6 @@ logicnets_jscl
 boom_med_pb
 vtr_mcml
 rosetta_fd
-corundum_25g
-finn_radioml
-vtr_lu64peeng
-corescore_500
-corescore_500_pb
-mlcad_d181_lefttwo3rds
-koios_dla_like_large
-boom_soc
-ispd16_example2
 ```
 
 ## 3. Run without profiling

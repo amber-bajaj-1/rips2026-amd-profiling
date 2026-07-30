@@ -1,5 +1,7 @@
 /Makefile.local
 /environment.sh
+/xcvu3p.tar.gz
+/xcvu3p/
 /benchmarks/
 /dependencies/
 /PathFinderFile
@@ -9,3 +11,4 @@
 /routes_to_phys
 /*.devicegraph
 /*.pathfinder-work*
+.DS_Store

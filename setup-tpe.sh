@@ -2,16 +2,19 @@
 set -Eeuo pipefail
 
 # Prepare an AMD University Program cloud instance for building and profiling
-# the Delta-Stepping PathFinder pipeline from the bundled benchmark archive.
+# the Delta-Stepping PathFinder pipeline from the benchmark release asset.
 
 readonly PROJECT_NAME="rips2026-amd-profiling"
 readonly PROJECT_REPO_URL="${PROJECT_REPO_URL:-https://github.com/amber-bajaj-1/rips2026-amd-profiling.git}"
 readonly SCHEMA_REPO_URL="${SCHEMA_REPO_URL:-https://github.com/chipsalliance/fpga-interchange-schema.git}"
 readonly SCHEMA_REVISION="${SCHEMA_REVISION:-c985b4648e66414b250261c1ba4cbe45a2971b1c}"
-readonly GIT_LFS_VERSION="3.7.1"
 readonly CAPNP_VERSION="${CAPNP_VERSION:-1.4.0}"
 readonly ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
 readonly DEVICE_NAME="xcvu3p"
+readonly BENCHMARK_RELEASE_TAG="benchmarks-v1"
+readonly BENCHMARK_ARCHIVE_URL="${BENCHMARK_ARCHIVE_URL:-https://github.com/amber-bajaj-1/rips2026-amd-profiling/releases/download/$BENCHMARK_RELEASE_TAG/xcvu3p.tar.gz}"
+readonly BENCHMARK_ARCHIVE_SIZE="${BENCHMARK_ARCHIVE_SIZE:-266646288}"
+readonly BENCHMARK_ARCHIVE_SHA256="${BENCHMARK_ARCHIVE_SHA256:-43cbd74a4fbe7136d75f971cb09c377bc6123a8d1a996cd33553400c4232e841}"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly JOBS="${JOBS:-$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)}"
 
@@ -32,7 +35,7 @@ readonly PROJECT_DIR="$RIPS_ROOT/$PROJECT_NAME"
 readonly LOCAL_PREFIX="${LOCAL_PREFIX:-$RIPS_ROOT/.local/$PROJECT_NAME}"
 readonly CACHE_DIR="${RIPS_CACHE_DIR:-$RIPS_ROOT/.cache/$PROJECT_NAME}"
 readonly BENCHMARK_DIR="$PROJECT_DIR/benchmarks"
-readonly BENCHMARK_ARCHIVE="$PROJECT_DIR/$DEVICE_NAME.tar.gz"
+readonly BENCHMARK_ARCHIVE="$CACHE_DIR/$DEVICE_NAME-$BENCHMARK_RELEASE_TAG.tar.gz"
 readonly DEVICE_FILE="$BENCHMARK_DIR/$DEVICE_NAME.device"
 readonly DEVICE_GRAPH="$BENCHMARK_DIR/$DEVICE_NAME.full-poc-base-wire.devicegraph"
 readonly SCHEMA_REPO_DIR="$PROJECT_DIR/dependencies/fpga-interchange-schema"
@@ -42,15 +45,6 @@ readonly -a BENCHMARKS=(
   boom_med_pb
   vtr_mcml
   rosetta_fd
-  corundum_25g
-  finn_radioml
-  vtr_lu64peeng
-  corescore_500
-  corescore_500_pb
-  mlcad_d181_lefttwo3rds
-  koios_dla_like_large
-  boom_soc
-  ispd16_example2
 )
 
 log() {
@@ -89,47 +83,6 @@ validate_base_tools() {
   for command_name in curl git make g++ sha256sum tar; do
     require_command "$command_name"
   done
-}
-
-install_git_lfs() {
-  if command -v git-lfs >/dev/null 2>&1 &&
-     git lfs version >/dev/null 2>&1; then
-    log "Git LFS is already available"
-    return
-  fi
-
-  local git_lfs_arch
-  local archive_sha256
-  case "$(uname -m)" in
-    x86_64 | amd64)
-      git_lfs_arch="amd64"
-      archive_sha256="1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08"
-      ;;
-    aarch64 | arm64)
-      git_lfs_arch="arm64"
-      archive_sha256="73a9c90eeb4312133a63c3eaee0c38c019ea7bfa0953d174809d25b18588dd8d"
-      ;;
-    *) die "Unsupported Git LFS architecture: $(uname -m)" ;;
-  esac
-
-  log "Installing Git LFS $GIT_LFS_VERSION under the selected root"
-  mkdir -p "$CACHE_DIR" "$LOCAL_PREFIX/bin"
-  local archive="$CACHE_DIR/git-lfs-linux-$git_lfs_arch-v$GIT_LFS_VERSION.tar.gz"
-  download \
-    "https://github.com/git-lfs/git-lfs/releases/download/v$GIT_LFS_VERSION/git-lfs-linux-$git_lfs_arch-v$GIT_LFS_VERSION.tar.gz" \
-    "$archive"
-  printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum --check --status ||
-    die "Git LFS archive checksum verification failed."
-
-  local extract_dir
-  extract_dir="$(mktemp -d "$CACHE_DIR/git-lfs.XXXXXX")"
-  tar -xzf "$archive" -C "$extract_dir"
-  local git_lfs_binary
-  git_lfs_binary="$(find "$extract_dir" -type f -name git-lfs -print -quit)"
-  [[ -n "$git_lfs_binary" ]] || die "The Git LFS archive did not contain git-lfs."
-  cp -- "$git_lfs_binary" "$LOCAL_PREFIX/bin/git-lfs"
-  chmod +x "$LOCAL_PREFIX/bin/git-lfs"
-  rm -rf -- "$extract_dir"
 }
 
 install_zlib() {
@@ -313,11 +266,6 @@ prepare_profiling_repository() {
   fi
 
   mkdir -p "$PROJECT_DIR/profiling" "$BENCHMARK_DIR" "$PROJECT_DIR/dependencies"
-  if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-    git -C "$PROJECT_DIR" lfs install --local
-    git -C "$PROJECT_DIR" lfs pull \
-      --include="$DEVICE_NAME.tar.gz" --exclude=""
-  fi
 }
 
 prepare_schema_repository() {
@@ -366,16 +314,61 @@ benchmarks_are_ready() {
   done
 }
 
+benchmark_archive_is_valid() {
+  local archive="$1"
+  [[ -s "$archive" ]] || return 1
+  [[ "$(wc -c <"$archive")" -eq "$BENCHMARK_ARCHIVE_SIZE" ]] || return 1
+  local actual_sha256
+  read -r actual_sha256 _ < <(sha256sum "$archive")
+  [[ "$actual_sha256" == "$BENCHMARK_ARCHIVE_SHA256" ]] &&
+    tar -tzf "$archive" >/dev/null 2>&1
+}
+
+download_benchmark_archive() {
+  if benchmark_archive_is_valid "$BENCHMARK_ARCHIVE"; then
+    log "Using the cached benchmark release asset at $BENCHMARK_ARCHIVE"
+    return
+  fi
+
+  mkdir -p "$CACHE_DIR"
+  local partial_archive="$BENCHMARK_ARCHIVE.part"
+  if benchmark_archive_is_valid "$partial_archive"; then
+    mv -- "$partial_archive" "$BENCHMARK_ARCHIVE"
+    log "Using the completed benchmark release asset at $BENCHMARK_ARCHIVE"
+    return
+  fi
+  if [[ -s "$partial_archive" &&
+        "$(wc -c <"$partial_archive")" -ge "$BENCHMARK_ARCHIVE_SIZE" ]]; then
+    rm -f -- "$partial_archive"
+  fi
+
+  if [[ -s "$partial_archive" ]]; then
+    log "Resuming the benchmark release download"
+  else
+    log "Downloading benchmark release $BENCHMARK_RELEASE_TAG"
+  fi
+
+  curl --fail --location \
+    --retry 5 --retry-delay 3 --retry-all-errors \
+    --continue-at - \
+    --output "$partial_archive" \
+    "$BENCHMARK_ARCHIVE_URL" ||
+    die "Benchmark download was interrupted. Run setup again to resume it."
+
+  if ! benchmark_archive_is_valid "$partial_archive"; then
+    rm -f -- "$partial_archive"
+    die "The downloaded benchmark archive failed checksum or tar validation."
+  fi
+  mv -- "$partial_archive" "$BENCHMARK_ARCHIVE"
+}
+
 extract_benchmarks() {
   if benchmarks_are_ready; then
     log "Using the extracted device and benchmarks at $BENCHMARK_DIR"
     return
   fi
 
-  [[ -s "$BENCHMARK_ARCHIVE" ]] ||
-    die "Missing benchmark archive: $BENCHMARK_ARCHIVE"
-  tar -tzf "$BENCHMARK_ARCHIVE" >/dev/null 2>&1 ||
-    die "$BENCHMARK_ARCHIVE is not a readable gzip-compressed tar archive."
+  download_benchmark_archive
 
   local archive_entry
   while IFS= read -r archive_entry; do
@@ -467,7 +460,6 @@ generate_device_graph() {
 main() {
   validate_managed_paths
   validate_base_tools
-  install_git_lfs
   export PATH="$LOCAL_PREFIX/bin:$PATH"
   prepare_profiling_repository
   extract_benchmarks
@@ -501,4 +493,6 @@ main() {
     "Profile: make profile BENCHMARK=logicnets_jscl"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
