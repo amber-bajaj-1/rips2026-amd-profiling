@@ -1,76 +1,27 @@
 # RIPS AMD PathFinder Profiling
 
-This repository runs the PathFinder wrapper with GPU Delta-Stepping on the AMD
-University Program (AUP) cloud. Generic bucketed Delta-Stepping is always used;
-there is no Unit-BFS or Bellman-Ford selection.
+Run the PathFinder wrapper with GPU Delta-Stepping on the AMD University
+Program (AUP) cloud.
 
 ## 1. Set up the AUP workspace
 
-The setup is fully non-privileged. It never calls `sudo`, `apt-get`, or another
-system package manager. The selected AUP image must already provide the AMD GPU
-driver, HIP/ROCm (`hipcc`), ROCprofiler-SDK (`rocprofv3`), a C++ compiler, Git,
-Make, Python 3, `curl`, and `tar`. These system and GPU components cannot be
-installed from an unprivileged notebook session.
-
-Start in the AUP home directory. The setup script must be present in this
-directory before running these commands.
+Place `setup-tpe.sh` in `/home/jovyan`, then run:
 
 ```bash
 cd /home/jovyan
 chmod +x setup-tpe.sh
 ./setup-tpe.sh
-```
-
-The script is named `setup-tpe.sh`, so run `./setup-tpe.sh`, not `./setup.sh`.
-
-Setup performs the following work:
-
-- validates preinstalled HIP/ROCm and `rocprofv3`, and uses either current or
-  legacy ROCTx when available;
-- installs Java 21, zlib, Cap'n Proto, and pip under `/home/jovyan` without
-  administrator permissions;
-- creates `/home/jovyan/fpga24_routing_contest`;
-- downloads all FPGA'24 routing benchmarks and prepares `xcvu3p.device`;
-- places this repository at
-  `/home/jovyan/fpga24_routing_contest/rips2026-amd-profiling`;
-- generates the FPGA Interchange C++ schemas and the device routing graph; and
-- compiles the wrapper, preprocessing tools, GPU PathFinder/Delta-Stepping
-  executable, and post-processing tool.
-
-Setup does not start a routing run. It stops with an error if a dependency,
-benchmark, device file, or required executable cannot be prepared.
-
-After setup completes, enter the profiling repository:
-
-```bash
 source /home/jovyan/.config/rips2026-amd-profiling/environment.sh
 cd /home/jovyan/fpga24_routing_contest/rips2026-amd-profiling
 ```
 
-Optional verification:
-
-```bash
-ls -lh PathFinderFile pathfinder interchange_to_csr device_to_routing_graph routes_to_phys
-ls -lh xcvu3p.full-poc-base-wire.devicegraph
-"$ROCPROFV3" --version
-```
-
-If setup reports that `hipcc` or `rocprofv3` is missing, select an AUP image
-containing the ROCm development and profiling SDK, or ask the cloud
-administrator to provide it. Do not try to install those system components
-with `sudo`; the setup intentionally avoids privileged operations. Missing
-ROCTx development files do not stop setup: profiling still records HIP calls,
-kernels, and memory operations, but named PathFinder ranges are disabled.
-
 ## 2. Choose a benchmark
-
-Set `BENCHMARK` to any downloaded contest benchmark:
 
 ```bash
 BENCHMARK=boom_med_pb
 ```
 
-Available names are:
+Available benchmarks:
 
 ```text
 logicnets_jscl
@@ -88,9 +39,7 @@ boom_soc
 ispd16_example2
 ```
 
-## 3. Run without GPU profiling
-
-Run PathFinder with the default Delta-Stepping bucket width of 1:
+## 3. Run without profiling
 
 ```bash
 make run BENCHMARK="$BENCHMARK"
@@ -102,81 +51,45 @@ The routed physical netlist is written to:
 /home/jovyan/fpga24_routing_contest/<benchmark>_PathFinderFile.phys
 ```
 
-To let PathFinder choose the Delta-Stepping width automatically:
-
-```bash
-make run BENCHMARK="$BENCHMARK" DELTA=auto
-```
-
-To use another numeric bucket width:
-
-```bash
-make run BENCHMARK="$BENCHMARK" DELTA=2
-```
-
-## 4. Run with GPU profiling
-
-Use the same benchmark and Delta setting with the `profile` target:
+## 4. Run with profiling
 
 ```bash
 make profile BENCHMARK="$BENCHMARK"
 ```
 
-For automatic Delta selection:
-
-```bash
-make profile BENCHMARK="$BENCHMARK" DELTA=auto
-```
-
-The profile target runs `rocprofv3` around the inner GPU PathFinder executable.
-It records HIP runtime activity, kernel dispatches, and memory operations.
-When the AUP image supplies ROCTx development files, it also records the named
-ranges built into PathFinder and Delta-Stepping. Delta-Stepping telemetry is
-enabled automatically for every profiled run.
-
-Every profiled run gets a timestamped directory:
+Each run writes its ROCprofiler traces, wrapper log, telemetry, and routed
+physical netlist to:
 
 ```text
-/home/jovyan/fpga24_routing_contest/rips2026-amd-profiling/
-  profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
+profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
 ```
 
-That directory contains:
-
-- ROCprofiler CSV trace files, possibly inside hostname/process subdirectories;
-- `pathfinder-wrapper.log`, including the Delta-Stepping telemetry record; and
-- `<benchmark>_PathFinderFile.phys`, the routed result from the profiled run.
-
-List the generated results with:
+List the generated files with:
 
 ```bash
 find "profiling/$BENCHMARK" -type f | sort
 ```
 
-## 5. Run an input outside the standard benchmark names
+## 5. Runtime options
 
-For a non-profiled run, provide all three netlist paths:
+Delta defaults to `1`. Select automatic Delta or another numeric value with:
+
+```bash
+make run BENCHMARK="$BENCHMARK" DELTA=auto
+make profile BENCHMARK="$BENCHMARK" DELTA=2
+```
+
+Set the number of independent routing workers with
+`--parallel-net-workers`. The default is `0`, which selects the worker count
+automatically.
 
 ```bash
 make run \
-  INPUT_PHYS=/absolute/path/example_unrouted.phys \
-  LOGICAL_NETLIST=/absolute/path/example.netlist \
-  OUTPUT_PHYS=/absolute/path/example_PathFinderFile.phys
+  BENCHMARK="$BENCHMARK" \
+  PATHFINDER_ARGS='--parallel-net-workers 4'
 ```
 
-For a profiled run, provide the input paths and a short label:
-
-```bash
-make profile \
-  INPUT_PHYS=/absolute/path/example_unrouted.phys \
-  LOGICAL_NETLIST=/absolute/path/example.netlist \
-  PROFILE_LABEL=example
-```
-
-The custom profiled run is written under `profiling/example/<timestamp>/`.
-
-`PATHFINDER_ARGS` remains available for advanced options that do not have a
-Makefile variable. For example:
+The same option works for profiling:
 
 ```bash
 make profile \
@@ -185,23 +98,50 @@ make profile \
   PATHFINDER_ARGS='--parallel-net-workers 4'
 ```
 
-Use `DELTA=...` for the bucket width instead of placing `--delta` in
-`PATHFINDER_ARGS`.
+Other useful `PATHFINDER_ARGS` include:
 
-## Useful commands
+| Option | Purpose |
+|---|---|
+| `--net-limit N` | Route only the first `N` requests |
+| `--max-sssp-iters N` | Limit Delta-Stepping rounds |
+| `--delta-telemetry` | Print Delta-Stepping telemetry during a regular run |
+| `--strict-routing` | Fail instead of writing partial routes |
+| `--keep-work-dir` | Preserve intermediate CSR, metadata, and route files |
+| `--work-dir PATH` | Choose the intermediate-file directory |
 
-Display the Makefile's current examples:
+Multiple options can be placed in the same string:
 
 ```bash
-make help
+make profile \
+  BENCHMARK="$BENCHMARK" \
+  PATHFINDER_ARGS='--parallel-net-workers 4 --net-limit 100 --keep-work-dir'
 ```
 
-Recompile all pipeline executables using the AUP paths detected during setup:
+Profiled runs enable Delta-Stepping telemetry automatically. Use `DELTA=...`
+for the bucket width instead of placing `--delta` in `PATHFINDER_ARGS`.
+
+Display all wrapper options with:
 
 ```bash
-make clean
-make pipeline
+./PathFinderFile --help
 ```
 
-`make clean` removes compiled executables only. It does not remove benchmarks,
-the device graph, routed netlists, or profiling results.
+## 6. Run a custom benchmark
+
+Without profiling:
+
+```bash
+make run \
+  INPUT_PHYS=/absolute/path/example_unrouted.phys \
+  LOGICAL_NETLIST=/absolute/path/example.netlist \
+  OUTPUT_PHYS=/absolute/path/example_PathFinderFile.phys
+```
+
+With profiling:
+
+```bash
+make profile \
+  INPUT_PHYS=/absolute/path/example_unrouted.phys \
+  LOGICAL_NETLIST=/absolute/path/example.netlist \
+  PROFILE_LABEL=example
+```
