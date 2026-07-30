@@ -96,7 +96,7 @@ PREPROCESS_HEADERS := \
 	pre-process/import_policy.hpp
 
 .PHONY: all router pipeline interchange-tools device-graph help run \
-	profile profile-counters profile-all clean
+	profile profile-counters profile-diagnostics profile-all clean
 
 .NOTPARALLEL: profile-all
 
@@ -242,7 +242,15 @@ else
 	@echo "Raw and derived PMC data: $(PROFILE_COUNTER_DATA_DIR)"
 endif
 
-profile-all: profile profile-counters
+# Re-enter make so COUNTER_BACKEND is set before the backend-specific
+# variables and recipes above are evaluated. This target intentionally ignores
+# a rocprofv3 default from Makefile.local.
+profile-diagnostics:
+	+@$(MAKE) --no-print-directory profile-counters \
+		COUNTER_BACKEND=rocprof-compute \
+		PROFILE_OUTPUT_DIR="$(PROFILE_OUTPUT_DIR)"
+
+profile-all: profile profile-diagnostics
 	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
 
 help:
@@ -261,9 +269,11 @@ help:
 	@echo
 	@echo "Collect gfx1150 hardware counters with rocprofv3:"
 	@echo "  make profile-counters BENCHMARK=logicnets_jscl"
-	@echo "  Use COUNTER_BACKEND=rocprof-compute only on a supported GPU."
 	@echo
-	@echo "Collect both profiles sequentially:"
+	@echo "Collect VALU and wave-wait diagnostics with rocprof-compute:"
+	@echo "  make profile-diagnostics BENCHMARK=logicnets_jscl"
+	@echo
+	@echo "Collect the runtime trace and diagnostics sequentially:"
 	@echo "  make profile-all BENCHMARK=logicnets_jscl"
 	@echo
 	@echo "All profiling output is written below:"

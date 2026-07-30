@@ -69,8 +69,9 @@ Collect both profiles sequentially:
 make profile-all BENCHMARK="$BENCHMARK"
 ```
 
-The combined target collects the runtime trace first, then uses `rocprofv3`
-multi-pass PMC collection for the hardware counters.
+The combined target collects the runtime trace first, then uses
+`rocprof-compute` System Speed-of-Light analysis for VALU and wave-wait
+diagnostics.
 
 ### Recommended 100-net profile
 
@@ -92,16 +93,16 @@ profiler results under:
 profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
 ```
 
-Runtime traces are under `runtime/rocprofv3/`. Hardware-counter CSV files are
-under `counters/rocprofv3-pmc/`. The counter passes include VALU instruction
-metrics, occupancy, L2 hit rate, and wait-any/wave-cycle counts.
+Runtime traces are under `runtime/rocprofv3/`. System Speed-of-Light profiling
+data and analyzed CSV files are under `counters/rocprof-compute/` and
+`counters/system-sol/`. These results include the gfx115x VALU and wave-wait
+diagnostics when they are supported by the detected GPU and ROCm installation.
 
-`rocprof-compute` can still be selected on a GPU accepted by its profile mode:
+Collect the raw `rocprofv3` PMC passes separately when needed:
 
 ```bash
 make profile-counters \
-  BENCHMARK="$BENCHMARK" \
-  COUNTER_BACKEND=rocprof-compute
+  BENCHMARK="$BENCHMARK"
 ```
 
 List the generated files with:
