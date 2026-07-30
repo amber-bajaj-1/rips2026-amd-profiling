@@ -513,7 +513,6 @@ ROCTX_LIBRARY := $ROCTX_LIBRARY
 ROCPROFV3 := $ROCPROFV3_PATH
 $rocprof_compute_make_line
 COUNTER_BACKEND := rocprofv3
-COUNTER_INPUT := $PROJECT_DIR/profiling-config/gfx1150-pmcs.txt
 INTERCHANGE_CPPFLAGS := -I$LOCAL_PREFIX/include
 INTERCHANGE_LIBS := -L$LOCAL_PREFIX/lib -Wl,-rpath,$LOCAL_PREFIX/lib -lcapnp -lkj -lz
 EOF

@@ -61,7 +61,10 @@ PROFILE_OUTPUT_PHYS ?= $(PROFILE_RUNTIME_DIR)/$(PROFILE_LABEL)_PathFinderFile.ph
 PROFILE_COUNTER_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
 PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_RUNTIME_DATA_DIR) --
 COUNTER_BACKEND ?= rocprofv3
-COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx1150-pmcs.txt
+COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx1150-pmcs.yaml
+ifneq ($(filter %/profiling-config/gfx1150-pmcs.txt,$(COUNTER_INPUT)),)
+COUNTER_INPUT := $(CURDIR)/profiling-config/gfx1150-pmcs.yaml
+endif
 
 ifeq ($(COUNTER_BACKEND),rocprofv3)
 PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprofv3-pmc

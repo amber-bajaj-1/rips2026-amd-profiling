@@ -1,5 +1,0 @@
-pmc: VALUInsts SALUInsts SFetchInsts Wavefronts
-pmc: MeanOccupancyPerActiveCU OccupancyPercent GPUBusy MemUnitBusy
-pmc: L2CacheHit
-pmc: SQ_INSTS_VALU
-pmc: SQ_WAIT_ANY SQ_WAVE_CYCLES
