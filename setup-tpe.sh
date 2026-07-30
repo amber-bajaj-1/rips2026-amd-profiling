@@ -4,6 +4,7 @@ set -Eeuo pipefail
 # Prepare an AMD University Program cloud instance for building and profiling
 # the Delta-Stepping PathFinder pipeline. This script intentionally stops after
 # downloading assets, generating the device graph, and compiling all binaries.
+# It never invokes sudo or a system package manager.
 
 readonly PROJECT_NAME="rips2026-amd-profiling"
 readonly PROJECT_REPO_URL="${PROJECT_REPO_URL:-https://github.com/amber-bajaj-1/rips2026-amd-profiling.git}"
@@ -15,14 +16,12 @@ readonly LOCAL_PREFIX="${LOCAL_PREFIX:-$HOME/.local/rips2026-amd-profiling}"
 readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rips2026-amd-profiling"
 readonly JAVA_HOME_SETUP="${RIPS_JAVA_HOME:-$HOME/.local/opt/temurin-21}"
 readonly CAPNP_VERSION="${CAPNP_VERSION:-1.4.0}"
+readonly ZLIB_VERSION="${ZLIB_VERSION:-1.3.1}"
 readonly DEVICE_NAME="xcvu3p"
 readonly DEVICE_FILE="$CONTEST_DIR/$DEVICE_NAME.device"
 readonly DEVICE_GRAPH="$PROJECT_DIR/$DEVICE_NAME.full-poc-base-wire.devicegraph"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly JOBS="${JOBS:-$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)}"
-
-APT_UPDATED=0
-PRIVILEGE_COMMAND=()
 
 log() {
   printf '\n[%s] %s\n' "$PROJECT_NAME" "$*"
@@ -53,48 +52,52 @@ download() {
     --output "$output" "$url"
 }
 
-configure_privilege_command() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    PRIVILEGE_COMMAND=()
-  elif command -v sudo >/dev/null 2>&1; then
-    PRIVILEGE_COMMAND=(sudo)
-  fi
+validate_base_tools() {
+  log "Validating the non-privileged AUP build environment"
+  local command_name
+  for command_name in curl git make g++ python3 tar; do
+    require_command "$command_name"
+  done
 }
 
-apt_update_once() {
-  if ((APT_UPDATED == 0)); then
-    "${PRIVILEGE_COMMAND[@]}" apt-get update
-    APT_UPDATED=1
-  fi
-}
-
-install_base_packages() {
-  if ! command -v apt-get >/dev/null 2>&1; then
-    log "apt-get is unavailable; validating preinstalled build tools instead."
-    return
-  fi
-  if [[ "$(id -u)" -ne 0 && ${#PRIVILEGE_COMMAND[@]} -eq 0 ]]; then
-    log "No root or sudo access; validating preinstalled build tools instead."
+ensure_python_pip() {
+  if python3 -m pip --version >/dev/null 2>&1; then
     return
   fi
 
-  log "Installing system build dependencies"
-  apt_update_once
-  "${PRIVILEGE_COMMAND[@]}" apt-get install -y \
-    build-essential \
-    ca-certificates \
-    curl \
-    git \
-    make \
-    perl \
-    pkg-config \
-    python3 \
-    python3-pip \
-    tar \
-    time \
-    unzip \
-    wget \
-    zlib1g-dev
+  log "Installing pip in the current user's home directory"
+  mkdir -p "$CACHE_DIR"
+  local get_pip="$CACHE_DIR/get-pip.py"
+  download "https://bootstrap.pypa.io/get-pip.py" "$get_pip"
+  python3 "$get_pip" --user
+  python3 -m pip --version >/dev/null 2>&1 ||
+    die "pip could not be installed without administrator privileges."
+}
+
+install_zlib() {
+  if [[ -f "$LOCAL_PREFIX/include/zlib.h" ]] &&
+     find "$LOCAL_PREFIX/lib" -maxdepth 1 \
+       \( -name 'libz.so' -o -name 'libz.a' \) -print -quit 2>/dev/null |
+       grep -q .; then
+    log "The user-local zlib installation is already available"
+    return
+  fi
+
+  log "Building zlib $ZLIB_VERSION in the current user's home directory"
+  mkdir -p "$CACHE_DIR" "$LOCAL_PREFIX/src"
+  local archive="$CACHE_DIR/zlib-$ZLIB_VERSION.tar.gz"
+  local source_dir="$LOCAL_PREFIX/src/zlib-$ZLIB_VERSION"
+  download \
+    "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" \
+    "$archive"
+  rm -rf -- "$source_dir"
+  tar -xzf "$archive" -C "$LOCAL_PREFIX/src"
+  (
+    cd "$source_dir"
+    ./configure --prefix="$LOCAL_PREFIX"
+    make -j"$JOBS"
+    make install
+  )
 }
 
 install_java_21() {
@@ -174,65 +177,79 @@ configure_rocm_environment() {
   export LD_LIBRARY_PATH="$ROCM_ROOT/lib:$ROCM_ROOT/lib64:${LD_LIBRARY_PATH:-}"
 }
 
-install_profiler_if_needed() {
-  local existing_header
-  local existing_library
-  existing_header="$(
-    find "$ROCM_ROOT/include" /usr/include \
-      -path '*/rocprofiler-sdk-roctx/roctx.h' -print -quit 2>/dev/null ||
-      true
-  )"
-  existing_library="$(
-    find "$ROCM_ROOT/lib" "$ROCM_ROOT/lib64" /usr/lib /usr/lib64 \
-      -name 'librocprofiler-sdk-roctx.so' -print -quit 2>/dev/null ||
-      true
-  )"
-  if command -v rocprofv3 >/dev/null 2>&1 &&
-     [[ -n "$existing_header" && -n "$existing_library" ]]; then
-    log "rocprofv3 and the ROCTx development files are already installed"
-    return
+locate_rocprofv3() {
+  local candidate
+  candidate="$(command -v rocprofv3 || true)"
+  if [[ -z "$candidate" && -x "$ROCM_ROOT/bin/rocprofv3" ]]; then
+    candidate="$ROCM_ROOT/bin/rocprofv3"
   fi
-
-  if ! command -v apt-get >/dev/null 2>&1 ||
-     [[ "$(id -u)" -ne 0 && ${#PRIVILEGE_COMMAND[@]} -eq 0 ]]; then
-    die "rocprofv3 is missing and cannot be installed without apt and root/sudo access."
+  if [[ -z "$candidate" ]]; then
+    candidate="$(
+      find "$ROCM_ROOT" -type f -name rocprofv3 -perm -u+x \
+        -print -quit 2>/dev/null || true
+    )"
   fi
-
-  log "Installing ROCprofiler-SDK and rocprofv3"
-  apt_update_once
-  if apt-cache show rocprofiler-sdk >/dev/null 2>&1; then
-    "${PRIVILEGE_COMMAND[@]}" apt-get install -y rocprofiler-sdk
-  elif apt-cache show amdrocm-profiler-base >/dev/null 2>&1; then
-    "${PRIVILEGE_COMMAND[@]}" apt-get install -y amdrocm-profiler-base
-  else
-    die "No ROCprofiler-SDK package is available from the configured ROCm repositories."
-  fi
-
-  export PATH="$ROCM_ROOT/bin:$PATH"
-  command -v rocprofv3 >/dev/null 2>&1 ||
-    die "The profiler package installed, but rocprofv3 is still unavailable."
+  [[ -n "$candidate" ]] ||
+    die "rocprofv3 was not found in the preinstalled ROCm tree at $ROCM_ROOT. This setup never uses sudo; select an AUP image that includes ROCprofiler-SDK/rocprofv3 or set ROCM_PATH to that installation."
+  ROCPROFV3_PATH="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename "$candidate")"
+  export ROCPROFV3_PATH
+  log "Using preinstalled rocprofv3 at $ROCPROFV3_PATH"
 }
 
 locate_roctx_installation() {
-  local header
-  local library
-  header="$(
+  local sdk_header
+  local sdk_library
+  sdk_header="$(
     find "$ROCM_ROOT/include" /usr/include \
       -path '*/rocprofiler-sdk-roctx/roctx.h' -print -quit 2>/dev/null ||
       true
   )"
-  library="$(
-    find "$ROCM_ROOT/lib" "$ROCM_ROOT/lib64" /usr/lib /usr/lib64 \
-      -name 'librocprofiler-sdk-roctx.so' -print -quit 2>/dev/null ||
+  sdk_library="$(
+    find "$ROCM_ROOT/lib" "$ROCM_ROOT/lib64" \
+      /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu \
+      -name 'librocprofiler-sdk-roctx.so*' -print -quit 2>/dev/null ||
       true
   )"
-  [[ -n "$header" ]] ||
-    die "ROCTx header rocprofiler-sdk-roctx/roctx.h was not found."
-  [[ -n "$library" ]] ||
-    die "ROCTx development library librocprofiler-sdk-roctx.so was not found."
-  ROCM_INCLUDE_DIR="$(dirname "$(dirname "$header")")"
-  ROCM_LIBRARY_DIR="$(dirname "$library")"
-  export ROCM_INCLUDE_DIR ROCM_LIBRARY_DIR
+  if [[ -n "$sdk_header" && -n "$sdk_library" ]]; then
+    ROCTX_STYLE="sdk"
+    ROCTX_INCLUDE_DIR="$(dirname "$(dirname "$sdk_header")")"
+    ROCTX_LIBRARY="$sdk_library"
+  else
+    local legacy_header
+    local legacy_library
+    legacy_header="$(
+      find "$ROCM_ROOT/roctracer/include" "$ROCM_ROOT/include" /usr/include \
+        -name roctx.h \
+        ! -path '*/rocprofiler-sdk-roctx/*' \
+        -print -quit 2>/dev/null || true
+    )"
+    legacy_library="$(
+      find "$ROCM_ROOT/lib" "$ROCM_ROOT/lib64" \
+        /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu \
+        -name 'libroctx64.so*' -print -quit 2>/dev/null || true
+    )"
+    if [[ -n "$legacy_header" && -n "$legacy_library" ]]; then
+      ROCTX_STYLE="legacy"
+      ROCTX_INCLUDE_DIR="$(dirname "$legacy_header")"
+      ROCTX_LIBRARY="$legacy_library"
+    else
+      ROCTX_STYLE="none"
+      ROCTX_INCLUDE_DIR="$ROCM_ROOT/include"
+      ROCTX_LIBRARY=""
+    fi
+  fi
+
+  if [[ -n "$ROCTX_LIBRARY" ]]; then
+    ROCM_LIBRARY_DIR="$(dirname "$ROCTX_LIBRARY")"
+    log "Using $ROCTX_STYLE ROCTx from $ROCTX_LIBRARY"
+  elif [[ -d "$ROCM_ROOT/lib" ]]; then
+    ROCM_LIBRARY_DIR="$ROCM_ROOT/lib"
+    log "ROCTx development files are unavailable; custom ranges will be disabled"
+  else
+    ROCM_LIBRARY_DIR="$ROCM_ROOT/lib64"
+    log "ROCTx development files are unavailable; custom ranges will be disabled"
+  fi
+  export ROCTX_STYLE ROCTX_INCLUDE_DIR ROCTX_LIBRARY ROCM_LIBRARY_DIR
 }
 
 persist_environment() {
@@ -243,7 +260,8 @@ persist_environment() {
 export JAVA_HOME="$JAVA_HOME_SETUP"
 export LOCAL_PREFIX="$LOCAL_PREFIX"
 export ROCM_PATH="$ROCM_ROOT"
-export PATH="$HOME/.local/bin:\$JAVA_HOME/bin:\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:\$PATH"
+export ROCPROFV3="$ROCPROFV3_PATH"
+export PATH="$HOME/.local/bin:\$JAVA_HOME/bin:\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:$(dirname "$ROCPROFV3_PATH"):\$PATH"
 export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:$ROCM_LIBRARY_DIR:\${LD_LIBRARY_PATH:-}"
 export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:\${PKG_CONFIG_PATH:-}"
 export RIPS_CONTEST_DIR="$CONTEST_DIR"
@@ -283,6 +301,17 @@ prepare_profiling_repository() {
   fi
 
   mkdir -p "$PROJECT_DIR/profiling"
+}
+
+prepare_java_schema() {
+  local java_schema="$CONTEST_DIR/fpga-interchange-schema/interchange/capnp/java.capnp"
+  mkdir -p "$(dirname "$java_schema")"
+  if [[ ! -s "$java_schema" ]]; then
+    log "Downloading the Cap'n Proto Java schema without system package tools"
+    download \
+      "https://raw.githubusercontent.com/capnproto/capnproto-java/master/compiler/src/main/schema/capnp/java.capnp" \
+      "$java_schema"
+  fi
 }
 
 download_benchmarks() {
@@ -331,14 +360,8 @@ prepare_device() {
 
 generate_cpp_schemas() {
   local schema_dir="$CONTEST_DIR/fpga-interchange-schema/interchange"
-  local java_schema="$schema_dir/capnp/java.capnp"
   log "Generating FPGA Interchange C++ schemas"
-  mkdir -p "$(dirname "$java_schema")"
-  if [[ ! -s "$java_schema" ]]; then
-    download \
-      "https://raw.githubusercontent.com/capnproto/capnproto-java/master/compiler/src/main/schema/capnp/java.capnp" \
-      "$java_schema"
-  fi
+  prepare_java_schema
   (
     cd "$schema_dir"
     "$LOCAL_PREFIX/bin/capnp" compile -oc++ -I . \
@@ -353,8 +376,6 @@ generate_cpp_schemas() {
 
 write_local_make_configuration() {
   local config_file="$PROJECT_DIR/Makefile.local"
-  local rocprofv3_path
-  rocprofv3_path="$(command -v rocprofv3)"
 
   log "Writing detected AUP build paths to $config_file"
   cat >"$config_file" <<EOF
@@ -363,30 +384,20 @@ CONTEST_DIR := $CONTEST_DIR
 SCHEMA_DIR := $SCHEMA_DIR
 ROCM_PATH := $ROCM_ROOT
 ROCM_LIB_DIR := $ROCM_LIBRARY_DIR
-ROCTX_INCLUDE_DIR := $ROCM_INCLUDE_DIR
-ROCPROFV3 := $rocprofv3_path
-CXX_FLAGS := -std=c++17 -O3 -I$LOCAL_PREFIX/include
+ROCTX_STYLE := $ROCTX_STYLE
+ROCTX_INCLUDE_DIR := $ROCTX_INCLUDE_DIR
+ROCTX_LIBRARY := $ROCTX_LIBRARY
+ROCPROFV3 := $ROCPROFV3_PATH
+INTERCHANGE_CPPFLAGS := -I$LOCAL_PREFIX/include
 INTERCHANGE_LIBS := -L$LOCAL_PREFIX/lib -Wl,-rpath,$LOCAL_PREFIX/lib -lcapnp -lkj -lz
 EOF
 }
 
 compile_pipeline() {
   log "Compiling all preprocessing, routing, and post-processing binaries"
-  local cxx_flags="-std=c++17 -O3 -I$LOCAL_PREFIX/include"
-  local interchange_libs="-L$LOCAL_PREFIX/lib -Wl,-rpath,$LOCAL_PREFIX/lib -lcapnp -lkj -lz"
-  local roctx_flags="-DPATHFINDER_ENABLE_ROCTX -I$ROCM_INCLUDE_DIR"
-  local roctx_libs="-L$ROCM_LIBRARY_DIR -Wl,-rpath,$ROCM_LIBRARY_DIR -lrocprofiler-sdk-roctx"
 
   make -C "$PROJECT_DIR" clean
-  make -C "$PROJECT_DIR" -j"$JOBS" pipeline \
-    SCHEMA_DIR="$SCHEMA_DIR" \
-    ROCM_PATH="$ROCM_ROOT" \
-    ROCM_LIB_DIR="$ROCM_LIBRARY_DIR" \
-    CXX_FLAGS="$cxx_flags" \
-    INTERCHANGE_LIBS="$interchange_libs" \
-    PATHFINDER_ENABLE_ROCTX=1 \
-    PATHFINDER_ROCTX_FLAGS="$roctx_flags" \
-    PATHFINDER_ROCTX_LIBS="$roctx_libs"
+  make -C "$PROJECT_DIR" -j"$JOBS" pipeline
 
   local binary
   for binary in \
@@ -416,15 +427,8 @@ generate_device_graph() {
 
 main() {
   validate_managed_paths
-  configure_privilege_command
-  install_base_packages
-
-  require_command curl
-  require_command git
-  require_command make
-  require_command g++
-  require_command python3
-  require_command tar
+  validate_base_tools
+  ensure_python_pip
 
   install_java_21
   export JAVA_HOME="$JAVA_HOME_SETUP"
@@ -432,16 +436,17 @@ main() {
   export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:${LD_LIBRARY_PATH:-}"
   export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
+  install_zlib
   install_capnproto
   configure_rocm_environment
   require_command hipcc
-  install_profiler_if_needed
-  require_command rocprofv3
+  locate_rocprofv3
   locate_roctx_installation
   persist_environment
 
   prepare_contest_repository
   prepare_profiling_repository
+  prepare_java_schema
   download_benchmarks
   prepare_device
   generate_cpp_schemas
@@ -454,7 +459,7 @@ main() {
     "Contest repository: $CONTEST_DIR" \
     "Profiling repository: $PROJECT_DIR" \
     "Device graph: $DEVICE_GRAPH" \
-    "rocprofv3: $(command -v rocprofv3)" \
+    "rocprofv3: $ROCPROFV3_PATH" \
     "All benchmarks and binaries are ready; no routing workload was started." \
     "Next: cd \"$PROJECT_DIR\" && make run BENCHMARK=logicnets_jscl" \
     "Profile: make profile BENCHMARK=logicnets_jscl"

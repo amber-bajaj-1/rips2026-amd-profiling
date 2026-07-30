@@ -1,10 +1,14 @@
 #pragma once
 
 // Compile PathFinder with -DPATHFINDER_ENABLE_ROCTX and link against
-// rocprofiler-sdk-roctx to emit these ranges. Normal builds remain completely
+// either current or legacy ROCTx to emit these ranges. Normal builds remain
 // independent of the profiling SDK and optimize the scopes away.
 #if defined(PATHFINDER_ENABLE_ROCTX)
+#if defined(PATHFINDER_USE_LEGACY_ROCTX)
+#include <roctx.h>
+#else
 #include <rocprofiler-sdk-roctx/roctx.h>
+#endif
 #endif
 
 namespace pathfinder_profile {
