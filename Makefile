@@ -10,6 +10,7 @@ ROCTX_LIBRARY ?= $(ROCM_LIB_DIR)/librocprofiler-sdk-roctx.so
 
 HIPCC ?= $(if $(wildcard $(ROCM_PATH)/bin/hipcc),$(ROCM_PATH)/bin/hipcc,hipcc)
 ROCPROFV3 ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprofv3),$(ROCM_PATH)/bin/rocprofv3,rocprofv3)
+ROCPROF_COMPUTE ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprof-compute),$(ROCM_PATH)/bin/rocprof-compute,rocprof-compute)
 CXX ?= g++
 
 HIP_FLAGS ?= -std=c++17 -O3 -x hip
@@ -49,10 +50,33 @@ LOGICAL_NETLIST ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK_DIR)/$(BENCHMARK).netl
 
 PROFILE_ROOT ?= $(CURDIR)/profiling
 PROFILE_LABEL ?= $(if $(strip $(BENCHMARK)),$(BENCHMARK),custom)
-PROFILE_RUN ?= $(shell date +%Y%m%d-%H%M%S)
+ifndef PROFILE_RUN
+PROFILE_RUN := $(shell date +%Y%m%d-%H%M%S)
+endif
 PROFILE_OUTPUT_DIR ?= $(PROFILE_ROOT)/$(PROFILE_LABEL)/$(PROFILE_RUN)
-PROFILE_OUTPUT_PHYS ?= $(PROFILE_OUTPUT_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
-PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_OUTPUT_DIR) --
+PROFILE_RUNTIME_DIR ?= $(PROFILE_OUTPUT_DIR)/runtime
+PROFILE_RUNTIME_DATA_DIR ?= $(PROFILE_RUNTIME_DIR)/rocprofv3
+PROFILE_COUNTER_DIR ?= $(PROFILE_OUTPUT_DIR)/counters
+PROFILE_OUTPUT_PHYS ?= $(PROFILE_RUNTIME_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
+PROFILE_COUNTER_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
+PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_RUNTIME_DATA_DIR) --
+COUNTER_BACKEND ?= rocprofv3
+COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx1150-pmcs.txt
+
+ifeq ($(COUNTER_BACKEND),rocprofv3)
+PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprofv3-pmc
+COUNTER_PROFILE_TOOL ?= $(ROCPROFV3)
+COUNTER_PROFILE_PREFIX ?= $(ROCPROFV3) --input $(COUNTER_INPUT) --output-format csv --output-directory $(PROFILE_COUNTER_DATA_DIR) --
+else ifeq ($(COUNTER_BACKEND),rocprof-compute)
+PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprof-compute
+COUNTER_PROFILE_TOOL ?= $(ROCPROF_COMPUTE)
+ROCPROF_COMPUTE_PROFILE_ARGS ?= -b 2 --no-roof --format-rocprof-output csv
+ROCPROF_COMPUTE_ANALYZE_ARGS ?= -b 2
+COUNTER_PROFILE_PREFIX ?= $(ROCPROF_COMPUTE) profile --output-directory $(PROFILE_COUNTER_DATA_DIR) $(ROCPROF_COMPUTE_PROFILE_ARGS) --
+COUNTER_ANALYSIS_OUTPUT_NAME ?= system-sol
+else
+$(error unsupported COUNTER_BACKEND '$(COUNTER_BACKEND)'; use rocprofv3 or rocprof-compute)
+endif
 
 DELTA_SOURCES := \
 	delta_stepping/delta_stepping.cpp
@@ -68,7 +92,10 @@ PREPROCESS_HEADERS := \
 	pre-process/gzip_io.hpp \
 	pre-process/import_policy.hpp
 
-.PHONY: all router pipeline interchange-tools device-graph help run profile clean
+.PHONY: all router pipeline interchange-tools device-graph help run \
+	profile profile-counters profile-all clean
+
+.NOTPARALLEL: profile-all
 
 all: router
 
@@ -160,9 +187,9 @@ define require_regular_output
 	@mkdir -p "$(dir $(OUTPUT_PHYS))"
 endef
 
-define execute_pipeline
-	env PATHFINDER_PROFILE_COMMAND='$(PROFILE_PREFIX)' \
-		./PathFinderFile "$(INPUT_PHYS)" "$(PROFILE_OUTPUT_PHYS)" \
+define execute_profile_pipeline
+	env PATHFINDER_PROFILE_COMMAND='$(1)' \
+		./PathFinderFile "$(INPUT_PHYS)" "$(2)" \
 		--logical-netlist "$(LOGICAL_NETLIST)" \
 		--device-graph "$(DEVICE_GRAPH)" $(PROFILE_PATHFINDER_ARGS)
 endef
@@ -179,9 +206,41 @@ profile: pipeline device-graph
 	$(require_run_inputs)
 	@command -v "$(ROCPROFV3)" >/dev/null 2>&1 || \
 		{ echo "rocprofv3 is unavailable at $(ROCPROFV3); run ./setup-tpe.sh first."; exit 2; }
-	@mkdir -p "$(PROFILE_OUTPUT_DIR)" "$(dir $(PROFILE_OUTPUT_PHYS))"
-	@echo "Profiling output: $(PROFILE_OUTPUT_DIR)"
-	@$(execute_pipeline) 2>&1 | tee "$(PROFILE_OUTPUT_DIR)/pathfinder-wrapper.log"
+	@mkdir -p "$(PROFILE_RUNTIME_DATA_DIR)" "$(dir $(PROFILE_OUTPUT_PHYS))"
+	@echo "Runtime profiling output: $(PROFILE_RUNTIME_DIR)"
+	@$(call execute_profile_pipeline,$(PROFILE_PREFIX),$(PROFILE_OUTPUT_PHYS)) \
+		2>&1 | tee "$(PROFILE_RUNTIME_DIR)/pathfinder-wrapper.log"
+
+profile-counters: pipeline device-graph
+	$(require_run_inputs)
+	@command -v "$(COUNTER_PROFILE_TOOL)" >/dev/null 2>&1 || \
+		{ echo "$(COUNTER_PROFILE_TOOL) is unavailable; run ./setup-tpe.sh first."; exit 2; }
+ifeq ($(COUNTER_BACKEND),rocprofv3)
+	@test -f "$(COUNTER_INPUT)" || \
+		{ echo "Hardware-counter input file not found: $(COUNTER_INPUT)"; exit 2; }
+endif
+	@mkdir -p "$(PROFILE_COUNTER_DIR)" "$(dir $(PROFILE_COUNTER_OUTPUT_PHYS))"
+	@echo "Hardware-counter backend: $(COUNTER_BACKEND)"
+	@echo "Hardware-counter profiling output: $(PROFILE_COUNTER_DIR)"
+	@$(call execute_profile_pipeline,$(COUNTER_PROFILE_PREFIX),$(PROFILE_COUNTER_OUTPUT_PHYS)) \
+		2>&1 | tee "$(PROFILE_COUNTER_DIR)/pathfinder-wrapper.log"
+	@test -d "$(PROFILE_COUNTER_DATA_DIR)" || \
+		{ echo "$(COUNTER_BACKEND) did not create $(PROFILE_COUNTER_DATA_DIR)"; exit 2; }
+ifeq ($(COUNTER_BACKEND),rocprof-compute)
+	@echo "Analyzing System Speed-of-Light counters"
+	@cd "$(PROFILE_COUNTER_DIR)" && \
+		"$(ROCPROF_COMPUTE)" analyze \
+			--path "$(PROFILE_COUNTER_DATA_DIR)" \
+			$(ROCPROF_COMPUTE_ANALYZE_ARGS) \
+			--output-format csv \
+			--output-name "$(COUNTER_ANALYSIS_OUTPUT_NAME)" \
+			2>&1 | tee "system-sol-analysis.log"
+else
+	@echo "Raw and derived PMC data: $(PROFILE_COUNTER_DATA_DIR)"
+endif
+
+profile-all: profile profile-counters
+	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
 
 help:
 	@echo "Build the Delta-Stepping router:"
@@ -194,16 +253,22 @@ help:
 	@echo "  make run BENCHMARK=logicnets_jscl"
 	@echo "  Delta defaults to 1; use DELTA=auto or DELTA=<positive-number> to override it."
 	@echo
-	@echo "Run the same benchmark with rocprofv3 profiling:"
+	@echo "Collect the runtime trace and timing statistics:"
 	@echo "  make profile BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "The profiler traces and wrapper log are written below:"
+	@echo "Collect gfx1150 hardware counters with rocprofv3:"
+	@echo "  make profile-counters BENCHMARK=logicnets_jscl"
+	@echo "  Use COUNTER_BACKEND=rocprof-compute only on a supported GPU."
+	@echo
+	@echo "Collect both profiles sequentially:"
+	@echo "  make profile-all BENCHMARK=logicnets_jscl"
+	@echo
+	@echo "All profiling output is written below:"
 	@echo "  $(PROFILE_ROOT)/<benchmark>/<timestamp>/"
-	@echo "The profiled routed .phys file is written in the same run directory."
 	@echo
 	@echo "For a benchmark outside the bundled naming convention:"
 	@echo "  make run INPUT_PHYS=... LOGICAL_NETLIST=... OUTPUT_PHYS=..."
-	@echo "  make profile INPUT_PHYS=... LOGICAL_NETLIST=... PROFILE_LABEL=..."
+	@echo "  make profile-all INPUT_PHYS=... LOGICAL_NETLIST=... PROFILE_LABEL=..."
 
 clean:
 	rm -f PathFinderFile pathfinder interchange_to_csr \

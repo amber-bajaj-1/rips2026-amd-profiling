@@ -80,7 +80,7 @@ download() {
 validate_base_tools() {
   log "Validating the non-privileged AUP build environment"
   local command_name
-  for command_name in curl git make g++ sha256sum tar; do
+  for command_name in curl git make g++ python3 sha256sum tar; do
     require_command "$command_name"
   done
 }
@@ -174,6 +174,74 @@ locate_rocprofv3() {
   log "Using preinstalled rocprofv3 at $ROCPROFV3_PATH"
 }
 
+locate_rocprof_compute() {
+  local candidate
+  candidate="$(command -v rocprof-compute || true)"
+  if [[ -z "$candidate" && -x "$ROCM_ROOT/bin/rocprof-compute" ]]; then
+    candidate="$ROCM_ROOT/bin/rocprof-compute"
+  fi
+  if [[ -z "$candidate" ]]; then
+    candidate="$(
+      find "$ROCM_ROOT" -type f -name rocprof-compute -perm -u+x \
+        -print -quit 2>/dev/null || true
+    )"
+  fi
+  if [[ -z "$candidate" ]]; then
+    ROCPROF_COMPUTE_PATH=""
+    export ROCPROF_COMPUTE_PATH
+    log "rocprof-compute is unavailable; gfx1150 counters will use rocprofv3"
+    return
+  fi
+  ROCPROF_COMPUTE_PATH="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename "$candidate")"
+  export ROCPROF_COMPUTE_PATH
+  log "Using preinstalled rocprof-compute at $ROCPROF_COMPUTE_PATH"
+}
+
+prepare_rocprof_compute_analysis() {
+  ROCPROF_COMPUTE_PYTHONPATH=""
+  [[ -n "$ROCPROF_COMPUTE_PATH" ]] || return
+  local requirements_file
+  requirements_file="$(
+    find "$ROCM_ROOT" -type f \
+      -path '*rocprofiler-compute*/requirements.txt' \
+      -print -quit 2>/dev/null || true
+  )"
+
+  if [[ -n "$requirements_file" ]]; then
+    local python_deps_dir="$LOCAL_PREFIX/python/rocprof-compute"
+    local requirements_hash
+    local requirements_stamp="$python_deps_dir/.requirements-sha256"
+    read -r requirements_hash _ < <(sha256sum "$requirements_file")
+
+    python3 -m pip --version >/dev/null 2>&1 ||
+      die "python3 pip is required to install rocprof-compute analysis dependencies."
+    mkdir -p "$python_deps_dir"
+    if [[ ! -f "$requirements_stamp" ||
+          "$(<"$requirements_stamp")" != "$requirements_hash" ]]; then
+      log "Installing ROCm Compute Profiler analysis dependencies locally"
+      python3 -m pip install \
+        --disable-pip-version-check \
+        --upgrade \
+        --target "$python_deps_dir" \
+        -r "$requirements_file"
+      printf '%s\n' "$requirements_hash" >"$requirements_stamp"
+    else
+      log "ROCm Compute Profiler analysis dependencies are already installed"
+    fi
+
+    ROCPROF_COMPUTE_PYTHONPATH="$python_deps_dir"
+    export ROCPROF_COMPUTE_PYTHONPATH
+    export PYTHONPATH="$ROCPROF_COMPUTE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
+  else
+    log "Using the ROCm Compute Profiler analysis dependencies from the AUP image"
+  fi
+
+  "$ROCPROF_COMPUTE_PATH" analyze --help >/dev/null 2>&1 ||
+    die "rocprof-compute analysis dependencies are unavailable."
+  "$ROCPROF_COMPUTE_PATH" profile --list-available-metrics >/dev/null 2>&1 ||
+    die "rocprof-compute could not list hardware metrics on this AUP instance."
+}
+
 locate_roctx_installation() {
   local sdk_header
   local sdk_library
@@ -232,14 +300,26 @@ locate_roctx_installation() {
 
 persist_environment() {
   local environment_file="$PROJECT_DIR/environment.sh"
+  local pythonpath_line=""
+  local rocprof_compute_line=""
+  local rocprof_compute_path_entry=""
+  if [[ -n "$ROCPROF_COMPUTE_PYTHONPATH" ]]; then
+    pythonpath_line="export PYTHONPATH=\"$ROCPROF_COMPUTE_PYTHONPATH\${PYTHONPATH:+:\$PYTHONPATH}\""
+  fi
+  if [[ -n "$ROCPROF_COMPUTE_PATH" ]]; then
+    rocprof_compute_line="export ROCPROF_COMPUTE=\"$ROCPROF_COMPUTE_PATH\""
+    rocprof_compute_path_entry=":$(dirname "$ROCPROF_COMPUTE_PATH")"
+  fi
   cat >"$environment_file" <<EOF
 export RIPS_ROOT="$RIPS_ROOT"
 export LOCAL_PREFIX="$LOCAL_PREFIX"
 export ROCM_PATH="$ROCM_ROOT"
 export ROCPROFV3="$ROCPROFV3_PATH"
-export PATH="\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:$(dirname "$ROCPROFV3_PATH"):\$PATH"
+$rocprof_compute_line
+export PATH="\$LOCAL_PREFIX/bin:\$ROCM_PATH/bin:$(dirname "$ROCPROFV3_PATH")$rocprof_compute_path_entry:\$PATH"
 export LD_LIBRARY_PATH="$LOCAL_PREFIX/lib:$ROCM_LIBRARY_DIR:\${LD_LIBRARY_PATH:-}"
 export PKG_CONFIG_PATH="$LOCAL_PREFIX/lib/pkgconfig:\${PKG_CONFIG_PATH:-}"
+$pythonpath_line
 export RIPS_PROFILING_DIR="$PROJECT_DIR"
 export RIPS_BENCHMARK_DIR="$BENCHMARK_DIR"
 export RIPS_SCHEMA_DIR="$SCHEMA_DIR"
@@ -412,6 +492,10 @@ generate_cpp_schemas() {
 
 write_local_make_configuration() {
   local config_file="$PROJECT_DIR/Makefile.local"
+  local rocprof_compute_make_line=""
+  if [[ -n "$ROCPROF_COMPUTE_PATH" ]]; then
+    rocprof_compute_make_line="ROCPROF_COMPUTE := $ROCPROF_COMPUTE_PATH"
+  fi
 
   log "Writing detected AUP build paths to $config_file"
   cat >"$config_file" <<EOF
@@ -427,6 +511,9 @@ ROCTX_STYLE := $ROCTX_STYLE
 ROCTX_INCLUDE_DIR := $ROCTX_INCLUDE_DIR
 ROCTX_LIBRARY := $ROCTX_LIBRARY
 ROCPROFV3 := $ROCPROFV3_PATH
+$rocprof_compute_make_line
+COUNTER_BACKEND := rocprofv3
+COUNTER_INPUT := $PROJECT_DIR/profiling-config/gfx1150-pmcs.txt
 INTERCHANGE_CPPFLAGS := -I$LOCAL_PREFIX/include
 INTERCHANGE_LIBS := -L$LOCAL_PREFIX/lib -Wl,-rpath,$LOCAL_PREFIX/lib -lcapnp -lkj -lz
 EOF
@@ -472,6 +559,10 @@ main() {
   configure_rocm_environment
   require_command hipcc
   locate_rocprofv3
+  locate_rocprof_compute
+  if [[ "${ENABLE_ROCPROF_COMPUTE:-0}" == "1" ]]; then
+    prepare_rocprof_compute_analysis
+  fi
   locate_roctx_installation
 
   prepare_schema_repository
@@ -488,9 +579,13 @@ main() {
     "Benchmarks: $BENCHMARK_DIR" \
     "Device graph: $DEVICE_GRAPH" \
     "rocprofv3: $ROCPROFV3_PATH" \
+    "Counter backend: rocprofv3" \
     "Environment: $PROJECT_DIR/environment.sh" \
     "Next: cd \"$PROJECT_DIR\" && make run BENCHMARK=logicnets_jscl" \
-    "Profile: make profile BENCHMARK=logicnets_jscl"
+    "Profile: make profile-all BENCHMARK=logicnets_jscl"
+  if [[ -n "$ROCPROF_COMPUTE_PATH" ]]; then
+    printf '%s\n' "Optional rocprof-compute: $ROCPROF_COMPUTE_PATH"
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

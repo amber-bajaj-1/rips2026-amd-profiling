@@ -17,7 +17,9 @@ cd "$RIPS_ROOT/rips2026-amd-profiling"
 
 Setup downloads the `benchmarks-v1` release asset, extracts it into
 `benchmarks/`, compiles the pipeline, and generates the routing device graph
-there. An interrupted benchmark download resumes when setup is run again.
+there. It also verifies `rocprofv3`; `rocprof-compute` is optional because its
+profile mode does not support every AUP GPU. An interrupted benchmark download
+resumes when setup is run again.
 
 ## 2. Choose a benchmark
 
@@ -48,15 +50,58 @@ benchmarks/<benchmark>_PathFinderFile.phys
 
 ## 4. Run with profiling
 
+Collect the runtime trace and timing statistics used for kernel time
+allocation:
+
 ```bash
 make profile BENCHMARK="$BENCHMARK"
 ```
 
-Each run writes its ROCprofiler traces, wrapper log, telemetry, and routed
-physical netlist to:
+Collect the `gfx1150` hardware counters used for hot-kernel diagnostics:
+
+```bash
+make profile-counters BENCHMARK="$BENCHMARK"
+```
+
+Collect both profiles sequentially:
+
+```bash
+make profile-all BENCHMARK="$BENCHMARK"
+```
+
+The combined target collects the runtime trace first, then uses `rocprofv3`
+multi-pass PMC collection for the hardware counters.
+
+### Recommended 100-net profile
+
+This run collects kernel time allocation and the available hot-kernel
+diagnostic counters for the first 100 nets with Delta `1` and two routing
+workers:
+
+```bash
+make profile-all \
+  BENCHMARK="$BENCHMARK" \
+  DELTA=1 \
+  PATHFINDER_ARGS='--net-limit 100 --parallel-net-workers 2'
+```
+
+Each command writes its wrapper log, telemetry, routed physical netlist, and
+profiler results under:
 
 ```text
 profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
+```
+
+Runtime traces are under `runtime/rocprofv3/`. Hardware-counter CSV files are
+under `counters/rocprofv3-pmc/`. The counter passes include VALU instruction
+metrics, occupancy, L2 hit rate, and wait-any/wave-cycle counts.
+
+`rocprof-compute` can still be selected on a GPU accepted by its profile mode:
+
+```bash
+make profile-counters \
+  BENCHMARK="$BENCHMARK" \
+  COUNTER_BACKEND=rocprof-compute
 ```
 
 List the generated files with:
@@ -87,7 +132,7 @@ make run \
 The same option works for profiling:
 
 ```bash
-make profile \
+make profile-all \
   BENCHMARK="$BENCHMARK" \
   DELTA=auto \
   PATHFINDER_ARGS='--parallel-net-workers 4'
@@ -107,7 +152,7 @@ Other useful `PATHFINDER_ARGS` include:
 Multiple options can be placed in the same string:
 
 ```bash
-make profile \
+make profile-all \
   BENCHMARK="$BENCHMARK" \
   PATHFINDER_ARGS='--parallel-net-workers 4 --net-limit 100 --keep-work-dir'
 ```
@@ -132,10 +177,10 @@ make run \
   OUTPUT_PHYS=/absolute/path/example_PathFinderFile.phys
 ```
 
-With profiling:
+With runtime and hardware-counter profiling:
 
 ```bash
-make profile \
+make profile-all \
   INPUT_PHYS=/absolute/path/example_unrouted.phys \
   LOGICAL_NETLIST=/absolute/path/example.netlist \
   PROFILE_LABEL=example
