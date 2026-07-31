@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import math
 import sys
@@ -10,11 +11,10 @@ from collections import defaultdict
 from pathlib import Path
 
 
-REQUIRED_COUNTERS = (
+COMMON_COUNTERS = (
     "SQ_INSTS_VALU",
     "MeanOccupancyPerActiveCU",
     "L2CacheHit",
-    "SQ_WAIT_ANY",
     "SQ_WAVE_CYCLES",
 )
 
@@ -24,11 +24,23 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        fail(f"usage: {Path(sys.argv[0]).name} COUNTER_OUTPUT_DIRECTORY")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--wait-counter",
+        choices=("SQ_WAIT_ANY", "SQ_WAIT_INST_ANY", "none"),
+        default="SQ_WAIT_ANY",
+    )
+    parser.add_argument("output_directory", type=Path)
+    return parser.parse_args()
 
-    output_dir = Path(sys.argv[1])
+
+def main() -> None:
+    args = parse_args()
+    output_dir = args.output_directory
+    required_counters = COMMON_COUNTERS
+    if args.wait_counter != "none":
+        required_counters = (*required_counters, args.wait_counter)
     csv_files = sorted(output_dir.glob("pass_*/*/*_counter_collection.csv"))
     if not csv_files:
         fail(f"no counter_collection.csv files found below {output_dir}")
@@ -39,7 +51,7 @@ def main() -> None:
         with csv_file.open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 counter = row.get("Counter_Name", "")
-                if counter not in REQUIRED_COUNTERS:
+                if counter not in required_counters:
                     continue
                 try:
                     value = float(row["Counter_Value"])
@@ -60,7 +72,7 @@ def main() -> None:
                     materialize_rows[counter] += 1
 
     problems: list[str] = []
-    for counter in REQUIRED_COUNTERS:
+    for counter in required_counters:
         counter_values = values[counter]
         if not counter_values:
             problems.append(f"{counter} is missing")
@@ -75,7 +87,7 @@ def main() -> None:
 
     summary = ", ".join(
         f"{counter}={len(values[counter])} rows"
-        for counter in REQUIRED_COUNTERS
+        for counter in required_counters
     )
     print(f"Counter validation passed: {summary}")
 

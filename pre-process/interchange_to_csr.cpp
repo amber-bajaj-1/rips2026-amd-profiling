@@ -1134,8 +1134,6 @@ PhysicalImportStats parse_physical_netlist(
         case routing::interchange::PhysicalNetDisposition::
             kExcludeDriverlessSignal:
           ++stats.excluded_driverless_nets;
-          std::cout << "excluded_driverless_net: " << physical_net_name
-                    << '\n';
           break;
         case routing::interchange::PhysicalNetDisposition::
             kPreserveUnsupportedPartialSignal:

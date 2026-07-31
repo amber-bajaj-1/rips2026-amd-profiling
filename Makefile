@@ -3,6 +3,7 @@ SHELL := /bin/bash -o pipefail
 -include Makefile.local
 
 ROCM_PATH ?= /opt/rocm
+ROCM_VER ?= 7.0.0
 ROCM_LIB_DIR ?= $(if $(wildcard $(ROCM_PATH)/lib),$(ROCM_PATH)/lib,$(ROCM_PATH)/lib64)
 ROCTX_INCLUDE_DIR ?= $(ROCM_PATH)/include
 ROCTX_STYLE ?= sdk
@@ -10,6 +11,7 @@ ROCTX_LIBRARY ?= $(ROCM_LIB_DIR)/librocprofiler-sdk-roctx.so
 
 HIPCC ?= $(if $(wildcard $(ROCM_PATH)/bin/hipcc),$(ROCM_PATH)/bin/hipcc,hipcc)
 ROCPROFV3 ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprofv3),$(ROCM_PATH)/bin/rocprofv3,rocprofv3)
+ROCPROF_COMPUTE ?= $(if $(wildcard $(ROCM_PATH)/bin/rocprof-compute),$(ROCM_PATH)/bin/rocprof-compute,rocprof-compute)
 CXX ?= g++
 
 HIP_FLAGS ?= -std=c++17 -O3 -x hip
@@ -61,8 +63,17 @@ PROFILE_COUNTER_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinde
 PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_RUNTIME_DATA_DIR) --
 COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx115x-pmcs.yaml
 COUNTER_VALIDATOR ?= $(CURDIR)/profiling-config/validate_counter_output.py
+WAIT_VALIDATOR ?= $(CURDIR)/profiling-config/validate_wait_output.py
+WAIT_BACKEND ?= rocprofv3
+WAIT_COUNTER ?= SQ_WAIT_ANY
+FOCUSED_WAIT_COUNTER = $(if $(filter rocprofv3,$(WAIT_BACKEND)),$(WAIT_COUNTER),none)
 PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprofv3-pmc
 COUNTER_PROFILE_PREFIX ?= $(ROCPROFV3) --input $(COUNTER_INPUT) --output-format csv --output-directory $(PROFILE_COUNTER_DATA_DIR) --
+PROFILE_WAIT_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprof-compute-wait
+PROFILE_WAIT_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinderFile.wait.phys
+ROCPROF_COMPUTE_WAIT_ARGS ?= -b 2 --no-roof --format-rocprof-output csv
+PROFILE_WAIT_PREFIX ?= env ROCM_VER=$(ROCM_VER) $(ROCPROF_COMPUTE) profile --output-directory $(PROFILE_WAIT_DATA_DIR) $(ROCPROF_COMPUTE_WAIT_ARGS) --
+PROFILE_WAIT_PATHFINDER_ARGS ?= $(PROFILE_PATHFINDER_ARGS) --parallel-net-workers 1
 
 DELTA_SOURCES := \
 	delta_stepping/delta_stepping.cpp
@@ -79,9 +90,9 @@ PREPROCESS_HEADERS := \
 	pre-process/import_policy.hpp
 
 .PHONY: all router pipeline interchange-tools device-graph help run \
-	profile profile-counters profile-diagnostics profile-all clean
+	profile profile-counters profile-wait profile-diagnostics profile-all clean
 
-.NOTPARALLEL: profile-all
+.NOTPARALLEL: profile-diagnostics profile-all
 
 all: router
 
@@ -177,7 +188,8 @@ define execute_profile_pipeline
 	env PATHFINDER_PROFILE_COMMAND='$(1)' \
 		./PathFinderFile "$(INPUT_PHYS)" "$(2)" \
 		--logical-netlist "$(LOGICAL_NETLIST)" \
-		--device-graph "$(DEVICE_GRAPH)" $(PROFILE_PATHFINDER_ARGS)
+		--device-graph "$(DEVICE_GRAPH)" \
+		$(if $(strip $(3)),$(3),$(PROFILE_PATHFINDER_ARGS))
 endef
 
 run: pipeline device-graph
@@ -212,13 +224,33 @@ profile-counters: pipeline device-graph
 		2>&1 | tee "$(PROFILE_COUNTER_DIR)/pathfinder-wrapper.log"
 	@test -d "$(PROFILE_COUNTER_DATA_DIR)" || \
 		{ echo "rocprofv3 did not create $(PROFILE_COUNTER_DATA_DIR)"; exit 2; }
-	@python3 "$(COUNTER_VALIDATOR)" "$(PROFILE_COUNTER_DATA_DIR)"
+	@python3 "$(COUNTER_VALIDATOR)" \
+		--wait-counter "$(FOCUSED_WAIT_COUNTER)" \
+		"$(PROFILE_COUNTER_DATA_DIR)"
 	@echo "Raw and derived PMC data: $(PROFILE_COUNTER_DATA_DIR)"
 
-profile-diagnostics: profile-counters
+ifeq ($(WAIT_BACKEND),rocprof-compute)
+profile-wait: pipeline device-graph
+	$(require_run_inputs)
+	@command -v "$(ROCPROF_COMPUTE)" >/dev/null 2>&1 || \
+		{ echo "rocprof-compute is unavailable at $(ROCPROF_COMPUTE); run ./setup-tpe.sh first."; exit 2; }
+	@test -f "$(WAIT_VALIDATOR)" || \
+		{ echo "Wait-counter validator not found: $(WAIT_VALIDATOR)"; exit 2; }
+	@mkdir -p "$(PROFILE_WAIT_DATA_DIR)" "$(dir $(PROFILE_WAIT_OUTPUT_PHYS))"
+	@echo "Wait-counter profiling output: $(PROFILE_WAIT_DATA_DIR)"
+	@echo "The wait-counter replay uses one routing worker for reliable queue attribution."
+	@$(call execute_profile_pipeline,$(PROFILE_WAIT_PREFIX),$(PROFILE_WAIT_OUTPUT_PHYS),$(PROFILE_WAIT_PATHFINDER_ARGS)) \
+		2>&1 | tee "$(PROFILE_COUNTER_DIR)/pathfinder-wait-wrapper.log"
+	@python3 "$(WAIT_VALIDATOR)" "$(PROFILE_WAIT_DATA_DIR)"
+else
+profile-wait:
+	@echo "Wait counter $(WAIT_COUNTER) was collected by the focused rocprofv3 passes."
+endif
+
+profile-diagnostics: profile-counters profile-wait
 	@echo "Focused hot-kernel diagnostics are complete."
 
-profile-all: profile profile-counters
+profile-all: profile profile-counters profile-wait
 	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
 
 help:
@@ -238,7 +270,7 @@ help:
 	@echo "Collect focused gfx115x hot-kernel counters with rocprofv3:"
 	@echo "  make profile-counters BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "Alias for the focused hot-kernel counter run:"
+	@echo "Collect all hot-kernel diagnostics, including the selected wait backend:"
 	@echo "  make profile-diagnostics BENCHMARK=logicnets_jscl"
 	@echo
 	@echo "Collect the runtime trace and diagnostics sequentially:"
