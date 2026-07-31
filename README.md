@@ -1,11 +1,10 @@
-# RIPS AMD PathFinder Profiling
+# RIPS AMD Delta Stepping Profiling
 
-Run the PathFinder wrapper with GPU Delta-Stepping on the AMD University
-Program (AUP) cloud.
+Run GPU Delta-Stepping on AUP Cloud on FPGA24 Routing Contest Benchmarks (overlapping SSSPs). 
 
 ## 1. Set up the AUP workspace
 
-Choose a writable root directory, then run:
+Choose a writable root directory (e.g. /home/jovyan on TPE AUP Cloud), then run:
 
 ```bash
 RIPS_ROOT=/path/to/your/workspace
@@ -15,16 +14,10 @@ source "$RIPS_ROOT/rips2026-amd-profiling/environment.sh"
 cd "$RIPS_ROOT/rips2026-amd-profiling"
 ```
 
-Setup downloads the `benchmarks-v1` release asset, extracts it into
-`benchmarks/`, compiles the pipeline, and generates the routing device graph
-there. It also verifies `rocprofv3`, selects the supported `gfx115x` counter
-backends, and records the detected ROCm version for profiler compatibility. An
-interrupted benchmark download resumes when setup is run again.
-
 ## 2. Choose a benchmark
 
 ```bash
-BENCHMARK=boom_med_pb
+BENCHMARK=logicnets_jscl
 ```
 
 Available benchmarks:
@@ -50,6 +43,27 @@ benchmarks/<benchmark>_PathFinderFile.phys
 
 ## 4. Run with profiling
 
+### Recommended 1000-net profile (L2 Hit, VALU, Wait Cycles, etc)
+
+This run collects kernel time allocation and the available hot-kernel
+diagnostic counters for the first 1000 nets with Delta `1` and two routing
+workers:
+
+```bash
+make profile-all \
+  BENCHMARK="$BENCHMARK" \
+  DELTA=1 \
+  PATHFINDER_ARGS='--net-limit 100 --parallel-net-workers 2'
+```
+
+Each command writes its wrapper log, telemetry, routed physical netlist, and
+profiler results under:
+
+```text
+profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
+```
+
+### General Profiling Guidelines
 Collect the runtime trace and timing statistics used for kernel time
 allocation:
 
@@ -75,30 +89,6 @@ Collect both profiles sequentially:
 make profile-all BENCHMARK="$BENCHMARK"
 ```
 
-The combined target collects the runtime trace and every supported diagnostic
-pass. On AUP images that do not publicly expose an SQ wait counter through
-`rocprofv3`, it also runs a dedicated single-worker rocprof-compute replay.
-
-### Recommended 100-net profile
-
-This run collects kernel time allocation and the available hot-kernel
-diagnostic counters for the first 100 nets with Delta `1` and two routing
-workers:
-
-```bash
-make profile-all \
-  BENCHMARK="$BENCHMARK" \
-  DELTA=1 \
-  PATHFINDER_ARGS='--net-limit 100 --parallel-net-workers 2'
-```
-
-Each command writes its wrapper log, telemetry, routed physical netlist, and
-profiler results under:
-
-```text
-profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
-```
-
 Runtime traces are under `runtime/rocprofv3/`. Public hardware-counter CSV
 files are under `counters/rocprofv3-pmc/pass_*/`. The focused jobs collect:
 
@@ -112,11 +102,7 @@ files are under `counters/rocprofv3-pmc/pass_*/`. The focused jobs collect:
 
 Counter collection is restricted to the relaxation, cooperative controller,
 touched-state reset, predecessor-measurement/fill/materialization, and
-queue-flag-clear kernel families. Setup selects a public wait counter when one
-is available. If neither public wait counter is exposed, it uses
-rocprof-compute for `SQ_WAIT_ANY` and forces only that replay to one routing
-worker so its kernels stay on the profiled default GPU queue. These fallback
-files are stored under `counters/rocprof-compute-wait/`.
+queue-flag-clear kernel families.
 
 The Makefile checks that every selected counter is present, has a positive
 measurement, and contains materialization-kernel rows.
@@ -140,7 +126,9 @@ List the generated files with:
 find "profiling/$BENCHMARK" -type f | sort
 ```
 
-## 5. Runtime options
+## 5. Visualizing Profile Results
+
+## 6. Runtime options
 
 Delta defaults to `1`. Select automatic Delta or another numeric value with:
 
@@ -194,24 +182,4 @@ Display all wrapper options with:
 
 ```bash
 ./PathFinderFile --help
-```
-
-## 6. Run a custom benchmark
-
-Without profiling:
-
-```bash
-make run \
-  INPUT_PHYS=/absolute/path/example_unrouted.phys \
-  LOGICAL_NETLIST=/absolute/path/example.netlist \
-  OUTPUT_PHYS=/absolute/path/example_PathFinderFile.phys
-```
-
-With runtime and hardware-counter profiling:
-
-```bash
-make profile-all \
-  INPUT_PHYS=/absolute/path/example_unrouted.phys \
-  LOGICAL_NETLIST=/absolute/path/example.netlist \
-  PROFILE_LABEL=example
 ```
