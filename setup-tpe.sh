@@ -80,7 +80,7 @@ download() {
 validate_base_tools() {
   log "Validating the non-privileged AUP build environment"
   local command_name
-  for command_name in curl git make g++ sha256sum tar; do
+  for command_name in curl git make g++ python3 sha256sum tar; do
     require_command "$command_name"
   done
 }
@@ -172,6 +172,25 @@ locate_rocprofv3() {
   ROCPROFV3_PATH="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename "$candidate")"
   export ROCPROFV3_PATH
   log "Using preinstalled rocprofv3 at $ROCPROFV3_PATH"
+}
+
+validate_profiler_counter_support() {
+  log "Validating the available gfx115x profiling counters"
+  local available_counters="$CACHE_DIR/rocprofv3-available-counters.txt"
+  mkdir -p "$CACHE_DIR"
+  "$ROCPROFV3_PATH" --list-avail >"$available_counters" 2>&1 ||
+    die "rocprofv3 could not query the active GPU's counters. See $available_counters"
+
+  local counter
+  for counter in \
+    SQ_INSTS_VALU \
+    MeanOccupancyPerActiveCU \
+    L2CacheHit \
+    SQ_WAIT_ANY \
+    SQ_WAVE_CYCLES; do
+    grep -Fq "$counter" "$available_counters" ||
+      die "The active ROCm installation does not expose $counter. See $available_counters"
+  done
 }
 
 locate_roctx_installation() {
@@ -472,6 +491,7 @@ main() {
   configure_rocm_environment
   require_command hipcc
   locate_rocprofv3
+  validate_profiler_counter_support
   locate_roctx_installation
 
   prepare_schema_repository
@@ -488,7 +508,7 @@ main() {
     "Benchmarks: $BENCHMARK_DIR" \
     "Device graph: $DEVICE_GRAPH" \
     "rocprofv3: $ROCPROFV3_PATH" \
-    "Counter backend: rocprofv3" \
+    "Counter backend: rocprofv3 (five focused passes)" \
     "Environment: $PROJECT_DIR/environment.sh" \
     "Next: cd \"$PROJECT_DIR\" && make run BENCHMARK=logicnets_jscl" \
     "Profile: make profile-all BENCHMARK=logicnets_jscl"

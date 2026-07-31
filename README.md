@@ -17,8 +17,8 @@ cd "$RIPS_ROOT/rips2026-amd-profiling"
 
 Setup downloads the `benchmarks-v1` release asset, extracts it into
 `benchmarks/`, compiles the pipeline, and generates the routing device graph
-there. It also verifies `rocprofv3`. An interrupted benchmark download resumes
-when setup is run again.
+there. It also verifies `rocprofv3` and the five required `gfx115x` counters.
+An interrupted benchmark download resumes when setup is run again.
 
 ## 2. Choose a benchmark
 
@@ -56,10 +56,16 @@ allocation:
 make profile BENCHMARK="$BENCHMARK"
 ```
 
-Collect the `gfx1150` hardware counters used for hot-kernel diagnostics:
+Collect the `gfx115x` hardware counters used for hot-kernel diagnostics:
 
 ```bash
 make profile-counters BENCHMARK="$BENCHMARK"
+```
+
+`profile-diagnostics` is an alias for the same focused counter run:
+
+```bash
+make profile-diagnostics BENCHMARK="$BENCHMARK"
 ```
 
 Collect both profiles sequentially:
@@ -68,10 +74,9 @@ Collect both profiles sequentially:
 make profile-all BENCHMARK="$BENCHMARK"
 ```
 
-The combined target collects the runtime trace first, then uses
-four focused `rocprofv3` passes for hot-kernel diagnostics. The inner
-PathFinder therefore executes five times: once for timing and once for each
-counter pass.
+The combined target collects the runtime trace first, then uses five focused
+`rocprofv3` passes for hot-kernel diagnostics. The inner PathFinder therefore
+executes six times: once for timing and once for each counter pass.
 
 ### Recommended 100-net profile
 
@@ -94,19 +99,31 @@ profiling/<benchmark>/<YYYYMMDD-HHMMSS>/
 ```
 
 Runtime traces are under `runtime/rocprofv3/`. Hardware-counter CSV files are
-under `counters/rocprofv3-pmc/pass_1/` through `pass_4/`. The passes collect
+under `counters/rocprofv3-pmc/pass_1/` through `pass_5/`. The passes collect
 only:
 
 | Pass | Metric | Diagnostic |
 |---:|---|---|
-| 1 | `VALUInsts` | Vector-ALU instruction activity |
+| 1 | `SQ_INSTS_VALU` | Vector-ALU instruction activity |
 | 2 | `MeanOccupancyPerActiveCU` | Mean resident-wave occupancy on active CUs |
 | 3 | `L2CacheHit` | L2 cache hit rate |
-| 4 | `SQ_WAIT_ANY`, `SQ_WAVE_CYCLES` | Wait cycles and their wave-cycle denominator |
+| 4 | `SQ_WAIT_ANY` | Wave cycles stalled on any dependency |
+| 5 | `SQ_WAVE_CYCLES` | Wave-cycle denominator for the wait percentage |
 
 Counter collection is restricted to the relaxation, cooperative controller,
-touched-state reset, predecessor-materialization, and queue-flag-clear kernel
-families. Runtime-trace timings remain the source for kernel time allocation;
+touched-state reset, predecessor-measurement/fill/materialization, and
+queue-flag-clear kernel families. The two SQ counters use separate passes
+because combining them can cause `SQ_WAIT_ANY` to be omitted on `gfx1151`.
+The Makefile checks that every required counter is present, has a positive
+measurement, and contains materialization-kernel rows.
+
+The focused collector reports `SQ_INSTS_VALU` and `SQ_WAVE_CYCLES` directly;
+their per-dispatch `Counter_Value` fields replace the unreliable zero-valued
+`SQ_INSTS_VALU_sum` and `SQ_WAVE_CYCLES_sum` columns from the broad
+rocprof-compute pass. `MeanOccupancyPerActiveCU` supplies the resident-wave
+metric, and `SQ_WAIT_ANY / SQ_WAVE_CYCLES` supplies the wait percentage.
+
+Runtime-trace timings remain the source for kernel time allocation;
 counter-pass timings are diagnostic because PMC collection perturbs execution.
 If the runtime trace identifies a different hot kernel, copy the supplied YAML,
 adjust its `kernel_include_regex` values, and select it with

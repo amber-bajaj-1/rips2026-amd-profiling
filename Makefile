@@ -59,7 +59,8 @@ PROFILE_COUNTER_DIR ?= $(PROFILE_OUTPUT_DIR)/counters
 PROFILE_OUTPUT_PHYS ?= $(PROFILE_RUNTIME_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
 PROFILE_COUNTER_OUTPUT_PHYS ?= $(PROFILE_COUNTER_DIR)/$(PROFILE_LABEL)_PathFinderFile.phys
 PROFILE_PREFIX ?= $(ROCPROFV3) --runtime-trace --stats --output-format csv --output-directory $(PROFILE_RUNTIME_DATA_DIR) --
-COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx1150-pmcs.yaml
+COUNTER_INPUT ?= $(CURDIR)/profiling-config/gfx115x-pmcs.yaml
+COUNTER_VALIDATOR ?= $(CURDIR)/profiling-config/validate_counter_output.py
 PROFILE_COUNTER_DATA_DIR ?= $(PROFILE_COUNTER_DIR)/rocprofv3-pmc
 COUNTER_PROFILE_PREFIX ?= $(ROCPROFV3) --input $(COUNTER_INPUT) --output-format csv --output-directory $(PROFILE_COUNTER_DATA_DIR) --
 
@@ -78,7 +79,7 @@ PREPROCESS_HEADERS := \
 	pre-process/import_policy.hpp
 
 .PHONY: all router pipeline interchange-tools device-graph help run \
-	profile profile-counters profile-all clean
+	profile profile-counters profile-diagnostics profile-all clean
 
 .NOTPARALLEL: profile-all
 
@@ -202,6 +203,8 @@ profile-counters: pipeline device-graph
 		{ echo "rocprofv3 is unavailable at $(ROCPROFV3); run ./setup-tpe.sh first."; exit 2; }
 	@test -f "$(COUNTER_INPUT)" || \
 		{ echo "Hardware-counter input file not found: $(COUNTER_INPUT)"; exit 2; }
+	@test -f "$(COUNTER_VALIDATOR)" || \
+		{ echo "Counter validator not found: $(COUNTER_VALIDATOR)"; exit 2; }
 	@mkdir -p "$(PROFILE_COUNTER_DIR)" "$(dir $(PROFILE_COUNTER_OUTPUT_PHYS))"
 	@echo "Hardware-counter profiling output: $(PROFILE_COUNTER_DIR)"
 	@echo "Counter configuration: $(COUNTER_INPUT)"
@@ -209,7 +212,11 @@ profile-counters: pipeline device-graph
 		2>&1 | tee "$(PROFILE_COUNTER_DIR)/pathfinder-wrapper.log"
 	@test -d "$(PROFILE_COUNTER_DATA_DIR)" || \
 		{ echo "rocprofv3 did not create $(PROFILE_COUNTER_DATA_DIR)"; exit 2; }
+	@python3 "$(COUNTER_VALIDATOR)" "$(PROFILE_COUNTER_DATA_DIR)"
 	@echo "Raw and derived PMC data: $(PROFILE_COUNTER_DATA_DIR)"
+
+profile-diagnostics: profile-counters
+	@echo "Focused hot-kernel diagnostics are complete."
 
 profile-all: profile profile-counters
 	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
@@ -228,10 +235,13 @@ help:
 	@echo "Collect the runtime trace and timing statistics:"
 	@echo "  make profile BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "Collect focused gfx1150 hot-kernel counters with rocprofv3:"
+	@echo "Collect focused gfx115x hot-kernel counters with rocprofv3:"
 	@echo "  make profile-counters BENCHMARK=logicnets_jscl"
 	@echo
-	@echo "Collect one runtime trace and four counter passes sequentially:"
+	@echo "Alias for the focused hot-kernel counter run:"
+	@echo "  make profile-diagnostics BENCHMARK=logicnets_jscl"
+	@echo
+	@echo "Collect the runtime trace and diagnostics sequentially:"
 	@echo "  make profile-all BENCHMARK=logicnets_jscl"
 	@echo
 	@echo "All profiling output is written below:"
