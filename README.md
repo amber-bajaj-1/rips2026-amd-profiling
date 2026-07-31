@@ -1,10 +1,10 @@
 # RIPS AMD Delta Stepping Profiling
 
-Run GPU Delta-Stepping on AUP Cloud on FPGA24 Routing Contest Benchmarks (overlapping SSSPs). 
+Run GPU Delta-Stepping on AUP Cloud on FPGA24 Routing Contest Benchmarks (overlapping SSSPs). The profiling setup was created using Codex, and any profiling files can be uploaded to Codex for visualization (see example prompt below). 
 
 ## 1. Set up the AUP workspace
 
-Choose a writable root directory (e.g. /home/jovyan on TPE AUP Cloud), then run:
+Download the setup-tpe.sh file from this repository. Upload it to AUP Cloud. Choose a writable root directory (e.g. /home/jovyan on TPE AUP Cloud), then run:
 
 ```bash
 RIPS_ROOT=/path/to/your/workspace
