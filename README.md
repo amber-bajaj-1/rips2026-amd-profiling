@@ -154,7 +154,7 @@ The archive is created in the repository root. Download it, then upload that arc
 
 ### ChatGPT prompt
 
-Use this prompt with the uploaded archive:
+Here is an example prompt with the uploaded archive:
 
 ```text
 I attached a tar.gz archive containing one rips2026-amd-profiling run.
