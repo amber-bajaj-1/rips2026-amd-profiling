@@ -53,7 +53,7 @@ workers:
 make profile-all \
   BENCHMARK="$BENCHMARK" \
   DELTA=1 \
-  PATHFINDER_ARGS='--net-limit 100 --parallel-net-workers 2'
+  PATHFINDER_ARGS='--net-limit 1000 --parallel-net-workers 2'
 ```
 
 Each command writes its wrapper log, telemetry, routed physical netlist, and
@@ -127,6 +127,85 @@ find "profiling/$BENCHMARK" -type f | sort
 ```
 
 ## 5. Visualizing Profile Results
+
+### Package a profiling run on AUP Cloud
+
+From the `rips2026-amd-profiling` directory, list the available runs:
+
+```bash
+find "profiling/$BENCHMARK" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+```
+
+Set `PROFILE_RUN` to the timestamp you want to visualize, then create and
+validate an archive:
+
+```bash
+PROFILE_RUN=YYYYMMDD-HHMMSS
+ARCHIVE="${BENCHMARK}-${PROFILE_RUN}-profiling.tar.gz"
+
+tar -czf "$ARCHIVE" \
+  -C "profiling/$BENCHMARK" \
+  "$PROFILE_RUN"
+
+tar -tzf "$ARCHIVE" >/dev/null && ls -lh "$ARCHIVE"
+```
+
+The archive is created in the repository root. Download it, then upload that archive to ChatGPT.
+
+### ChatGPT prompt
+
+Use this prompt with the uploaded archive:
+
+```text
+I attached a tar.gz archive containing one rips2026-amd-profiling run.
+Extract it and inspect all files recursively.
+
+Create and display one dashboard visualization with these exact section
+headers:
+
+1. Kernel time allocation
+2. Hot-kernel diagnostics
+
+For kernel time allocation, use the rocprofv3 runtime kernel statistics—not
+wall-clock time. Group aggregate kernel duration into:
+
+- Relax: relax_light_edges_kernel and relax_heavy_edges_kernel
+- Reset: reset/touched-vertex kernels
+- Materialize: measure_edge_parent_target_paths_kernel,
+  fill_edge_parent_target_paths_kernel, and
+  materialize_predecessors_kernel
+- Other: every remaining kernel
+
+Show a horizontal stacked allocation bar with each phase's percentage and
+aggregate duration. Use blue for Relax, orange for Reset, green for
+Materialize, and dark gray for Other.
+
+Under Hot-kernel diagnostics, create separate Relax, Reset, and Materialize
+columns. For each phase, show:
+
+- VALU / peak
+- L2 hit
+- Resident waves, displayed as value / 64
+- Wait-any cycles
+
+Read the focused rocprofv3 counter_collection.csv files for
+SQ_INSTS_VALU, MeanOccupancyPerActiveCU, L2CacheHit, and SQ_WAVE_CYCLES.
+Use SQ_WAIT_ANY or SQ_WAIT_INST_ANY when present. If the public wait counter
+is absent, read SQ_WAIT_ANY and SQ_WAVE_CYCLES from the
+rocprof-compute-wait/pmc_perf_*.csv fallback files.
+
+Use duration-weighted values where appropriate. Calculate wait percentage as
+100 × sum(wait counter) / sum(SQ_WAVE_CYCLES). Derive VALU / peak using the
+GPU architecture information recorded in the profile, and state any hardware
+assumptions used. Label the wait metric if it came from the dedicated
+single-worker replay.
+
+Keep the dashboard compact and dark-themed, with colored progress bars matching
+the kernel-allocation colors. Do not estimate missing data. If any requested
+counter, phase, or architecture value is missing or contains no positive
+measurements, show N/A for that metric and give me a clear warning explaining
+which input is absent.
+```
 
 ## 6. Runtime options
 
