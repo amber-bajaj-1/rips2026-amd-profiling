@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../bellman_ford/bellman_ford.hpp"
 #include "../delta_stepping/delta_stepping.hpp"
 #include "../pre-process/import_policy.hpp"
 
@@ -16,6 +17,13 @@
 namespace routing {
 
 constexpr std::uint64_t kNoIndex = std::numeric_limits<std::uint64_t>::max();
+
+enum class SsspEngine {
+  kDeltaStep,
+  kBellmanFord,
+};
+
+const char* sssp_engine_name(SsspEngine engine) noexcept;
 
 struct EdgeAttr {
   std::uint64_t tile_string = 0;
@@ -108,6 +116,7 @@ struct RoutedNet {
 };
 
 struct PathfinderOptions {
+  SsspEngine sssp_engine = SsspEngine::kDeltaStep;
   float delta = 1.0f;
   int max_sssp_iterations = -1;
   // Explicit A/B control for generic vector-target Delta-Stepping runs.

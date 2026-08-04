@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Prepare an AMD University Program cloud instance for building and profiling
-# the Delta-Stepping PathFinder pipeline from the benchmark release asset.
+# the runtime-selectable PathFinder pipeline from the benchmark release asset.
 
 readonly PROJECT_NAME="rips2026-amd-profiling"
 readonly PROJECT_REPO_URL="${PROJECT_REPO_URL:-https://github.com/amber-bajaj-1/rips2026-amd-profiling.git}"
@@ -263,13 +263,13 @@ locate_roctx_installation() {
   local sdk_library
   sdk_header="$(
     find "$ROCM_ROOT/include" /usr/include \
-      -path '*/rocprofiler-sdk-roctx/roctx.h' -print -quit 2>/dev/null ||
+      -follow -path '*/rocprofiler-sdk-roctx/roctx.h' -print -quit 2>/dev/null ||
       true
   )"
   sdk_library="$(
     find "$ROCM_ROOT/lib" "$ROCM_ROOT/lib64" \
       /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu \
-      -name 'librocprofiler-sdk-roctx.so*' -print -quit 2>/dev/null ||
+      -follow -name 'librocprofiler-sdk-roctx.so*' -print -quit 2>/dev/null ||
       true
   )"
   if [[ -n "$sdk_header" && -n "$sdk_library" ]]; then
@@ -339,10 +339,12 @@ prepare_profiling_repository() {
     log "Using the existing profiling repository at $PROJECT_DIR"
     [[ -f "$PROJECT_DIR/Makefile" &&
        -d "$PROJECT_DIR/delta_stepping" &&
+       -d "$PROJECT_DIR/bellman_ford" &&
        -d "$PROJECT_DIR/routing" ]] ||
       die "$PROJECT_DIR is not a valid $PROJECT_NAME repository."
   elif [[ -f "$SCRIPT_DIR/Makefile" &&
           -d "$SCRIPT_DIR/delta_stepping" &&
+          -d "$SCRIPT_DIR/bellman_ford" &&
           -d "$SCRIPT_DIR/routing" ]]; then
     log "Copying the current profiling working tree into $RIPS_ROOT"
     cp -a -- "$SCRIPT_DIR" "$PROJECT_DIR"
@@ -587,6 +589,7 @@ main() {
     "Wait counter: $WAIT_COUNTER" \
     "Environment: $PROJECT_DIR/environment.sh" \
     "Next: cd \"$PROJECT_DIR\" && make run BENCHMARK=logicnets_jscl" \
+    "Bellman-Ford: make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bellman-ford" \
     "Profile: make profile-all BENCHMARK=logicnets_jscl"
 }
 

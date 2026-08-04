@@ -30,18 +30,25 @@ PATHFINDER_ROCTX_FLAGS += -DPATHFINDER_ENABLE_ROCTX -I$(ROCTX_INCLUDE_DIR)
 ifeq ($(ROCTX_STYLE),legacy)
 PATHFINDER_ROCTX_FLAGS += -DPATHFINDER_USE_LEGACY_ROCTX
 endif
-PATHFINDER_ROCTX_LIBS += $(ROCTX_LIBRARY) \
+PATHFINDER_ROCTX_LIBS += -x none $(ROCTX_LIBRARY) \
 	-Wl,-rpath,$(dir $(ROCTX_LIBRARY))
 endif
 
 BENCHMARK ?=
+PATHFINDER_SSSP_ENGINE ?= delta-step
+SUPPORTED_SSSP_ENGINES := delta-step delta-stepping bellman-ford
+ifeq ($(filter $(PATHFINDER_SSSP_ENGINE),$(SUPPORTED_SSSP_ENGINES)),)
+$(error PATHFINDER_SSSP_ENGINE must be one of: $(SUPPORTED_SSSP_ENGINES))
+endif
+PATHFINDER_USES_DELTA := $(if $(filter delta-step delta-stepping,$(PATHFINDER_SSSP_ENGINE)),1,)
 # This matches PathfinderOptions::delta. A --delta flag is emitted only when
 # the caller overrides the built-in value.
 DELTA ?= 1
 PATHFINDER_ARGS ?=
-DELTA_ARG = $(if $(strip $(DELTA)),$(if $(filter 1,$(strip $(DELTA))),,--delta $(DELTA)))
-RUN_PATHFINDER_ARGS = $(DELTA_ARG) $(PATHFINDER_ARGS)
-PROFILE_PATHFINDER_ARGS = $(RUN_PATHFINDER_ARGS) --delta-telemetry
+SSSP_ENGINE_ARG = --sssp-engine $(PATHFINDER_SSSP_ENGINE)
+DELTA_ARG = $(if $(PATHFINDER_USES_DELTA),$(if $(strip $(DELTA)),$(if $(filter 1,$(strip $(DELTA))),,--delta $(DELTA))))
+RUN_PATHFINDER_ARGS = $(SSSP_ENGINE_ARG) $(DELTA_ARG) $(PATHFINDER_ARGS)
+PROFILE_PATHFINDER_ARGS = $(RUN_PATHFINDER_ARGS) $(if $(PATHFINDER_USES_DELTA),--delta-telemetry)
 DEVICE_FILE ?= $(BENCHMARK_DIR)/xcvu3p.device
 DEVICE_GRAPH ?= $(BENCHMARK_DIR)/xcvu3p.full-poc-base-wire.devicegraph
 REBUILD_DEVICE_GRAPH ?= 0
@@ -79,6 +86,12 @@ DELTA_SOURCES := \
 	delta_stepping/delta_stepping.cpp
 DELTA_HEADERS := \
 	$(wildcard delta_stepping/*.hpp)
+BELLMAN_FORD_SOURCES := \
+	bellman_ford/bellman_ford.cpp
+BELLMAN_FORD_HEADERS := \
+	$(wildcard bellman_ford/*.hpp)
+SSSP_HEADERS := \
+	$(wildcard sssp/*.hpp)
 ROUTING_SOURCES := \
 	routing/pathfinder.cpp
 ROUTING_HEADERS := \
@@ -116,9 +129,11 @@ device-graph: device_to_routing_graph
 PathFinderFile: routing/pathfinder_router.cpp
 	$(CXX) $(CXX_FLAGS) $< -o $@
 
-pathfinder: $(ROUTING_SOURCES) $(ROUTING_HEADERS) $(DELTA_SOURCES) $(DELTA_HEADERS)
+pathfinder: $(ROUTING_SOURCES) $(ROUTING_HEADERS) \
+		$(DELTA_SOURCES) $(DELTA_HEADERS) \
+		$(BELLMAN_FORD_SOURCES) $(BELLMAN_FORD_HEADERS) $(SSSP_HEADERS)
 	$(HIPCC) $(HIP_FLAGS) $(PATHFINDER_ROCTX_FLAGS) \
-		$(ROUTING_SOURCES) $(DELTA_SOURCES) \
+		$(ROUTING_SOURCES) $(DELTA_SOURCES) $(BELLMAN_FORD_SOURCES) \
 		-pthread $(PATHFINDER_ROCTX_LIBS) -o $@
 
 define require_schema_dir
@@ -254,7 +269,7 @@ profile-all: profile profile-counters profile-wait
 	@echo "Combined profiling output: $(PROFILE_OUTPUT_DIR)"
 
 help:
-	@echo "Build the Delta-Stepping router:"
+	@echo "Build the runtime-selectable SSSP router:"
 	@echo "  make"
 	@echo
 	@echo "Build the full conversion/routing/reconstruction pipeline:"
@@ -262,6 +277,7 @@ help:
 	@echo
 	@echo "Run a bundled benchmark without profiling:"
 	@echo "  make run BENCHMARK=logicnets_jscl"
+	@echo "  make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bellman-ford"
 	@echo "  Delta defaults to 1; use DELTA=auto or DELTA=<positive-number> to override it."
 	@echo
 	@echo "Collect the runtime trace and timing statistics:"

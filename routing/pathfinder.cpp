@@ -1,18 +1,20 @@
 #include "pathfinder.hpp"
 
-#include "../delta_stepping/roctx_ranges.hpp"
+#include "../bellman_ford/bellman_ford_policy.hpp"
 #include "../pre-process/import_policy.hpp"
+#include "../sssp/roctx_ranges.hpp"
 
 // One-shot shortest-path router for the repository PathFinder flow.
 //
 // This keeps the same benchmark-facing and route JSON APIs, but the routing
 // pass intentionally ignores present/historical congestion and uses the
-// Delta-Stepping GPU implementation.
+// runtime-selected GPU SSSP implementation.
 //
 // Example GPU build from the repository root:
 //   hipcc -std=c++17 -O3 -x hip \
 //     routing/pathfinder.cpp \
 //     delta_stepping/delta_stepping.cpp \
+//     bellman_ford/bellman_ford.cpp \
 //     -pthread \
 //     -o pathfinder
 // Add -DPATHFINDER_ENABLE_ROCTX -lrocprofiler-sdk-roctx for profiler ranges.
@@ -282,6 +284,32 @@ void validate_csr_shape(const HostCsrF32& graph) {
 }
 
 void validate_options(const PathfinderOptions& options) {
+  if (options.capacity <= 0) {
+    throw std::invalid_argument("capacity must be positive");
+  }
+  if (options.max_sssp_iterations < -1) {
+    throw std::invalid_argument(
+        "max SSSP iterations must be -1 or nonnegative");
+  }
+  switch (options.sssp_engine) {
+    case SsspEngine::kDeltaStep:
+      break;
+    case SsspEngine::kBellmanFord:
+      if (options.delta != 1.0f || options.delta_auto ||
+          options.delta_multiplier != 1.0f || options.delta_telemetry ||
+          options.delta_force_legacy_parent ||
+          options.delta_controller_mode !=
+              DeltaSteppingCsrControllerMode::kHostChecked ||
+          options.delta_controller_batch_size !=
+              static_cast<int>(
+                  kDeltaSteppingCsrRecommendedControllerBatchSize)) {
+        throw std::invalid_argument(
+            "Delta-Stepping options cannot be applied to Bellman-Ford");
+      }
+      return;
+    default:
+      throw std::invalid_argument("invalid SSSP engine");
+  }
   switch (options.delta_controller_mode) {
     case DeltaSteppingCsrControllerMode::kHostChecked:
     case DeltaSteppingCsrControllerMode::kReducedRoundTrip:
@@ -316,9 +344,6 @@ void validate_options(const PathfinderOptions& options) {
       throw std::invalid_argument(
           "--delta-multiplier requires --delta auto");
     }
-  }
-  if (options.capacity <= 0) {
-    throw std::invalid_argument("capacity must be positive");
   }
 }
 
@@ -537,7 +562,7 @@ bool attach_path_if_single_parent_tree(
   return true;
 }
 
- DeltaSteppingCsrResult run_sssp_with_optional_delta_telemetry(
+SsspCsrResult run_workspace_sssp(
     DeltaSteppingCsrWorkspace& workspace,
     const std::vector<int>& sources,
     const std::vector<int>& targets,
@@ -561,6 +586,23 @@ bool attach_path_if_single_parent_tree(
                        DeltaSteppingCsrRunOptions{telemetry},
                        stream,
                        nullptr,
+                       nullptr);
+}
+
+SsspCsrResult run_workspace_sssp(
+    BellmanFordCsrWorkspace& workspace,
+    const std::vector<int>& sources,
+    const std::vector<int>& targets,
+    float delta,
+    int max_iterations,
+    hipStream_t stream,
+    DeltaSteppingCsrTelemetry* telemetry) {
+  (void)delta;
+  if (telemetry != nullptr) {
+    throw std::invalid_argument(
+        "Delta telemetry is unavailable for Bellman-Ford");
+  }
+  return workspace.run(sources, targets, max_iterations, stream, nullptr,
                        nullptr);
 }
 
@@ -739,8 +781,9 @@ bool extract_routed_sink_candidate(
   return true;
 }
 
+template <typename Workspace>
 RoutedNet route_net(const HostCsrF32& graph,
-                    DeltaSteppingCsrWorkspace& workspace,
+                    Workspace& workspace,
                     const RouteRequest& request,
                     std::vector<std::uint32_t>& tree_seen,
                     std::vector<int>& parent_by_child,
@@ -803,7 +846,7 @@ RoutedNet route_net(const HostCsrF32& graph,
     DeltaSteppingCsrTelemetry initial_telemetry;
     auto initial_sssp = [&]() {
       PATHFINDER_PROFILE_RANGE("pathfinder.sssp");
-      return run_sssp_with_optional_delta_telemetry(
+      return run_workspace_sssp(
           workspace,
           source_candidates,
           initial_targets,
@@ -1127,6 +1170,33 @@ std::size_t recommend_delta_worker_count(minplus_sparse::Offset rows,
 #endif
 }
 
+std::size_t recommend_bellman_ford_worker_count(
+    minplus_sparse::Offset rows,
+    std::size_t route_request_count,
+    const SsspQueryCapacityHints& capacity_hints,
+    hipStream_t stream) {
+  if (stream != nullptr || rows <= 0 || route_request_count <= 1) return 1;
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  if (hipMemGetInfo(&free_bytes, &total_bytes) != hipSuccess) return 1;
+  (void)total_bytes;
+  const std::size_t workspace_bytes =
+      bellman_ford_policy::estimated_workspace_bytes(
+          static_cast<std::size_t>(rows), capacity_hints.max_sources,
+          capacity_hints.max_targets);
+  return bellman_ford_policy::recommend_worker_count(
+      {route_request_count,
+       std::max<unsigned int>(1, std::thread::hardware_concurrency()),
+       free_bytes,
+       workspace_bytes});
+#else
+  (void)capacity_hints;
+  return 1;
+#endif
+}
+
+template <typename Workspace, typename SharedGraph, typename WorkspaceOptions>
 void route_all_nets_with_workspace(const HostCsrF32& base_graph,
                                    const RoutingMetadata& metadata,
                                    const PathfinderOptions& options,
@@ -1134,10 +1204,8 @@ void route_all_nets_with_workspace(const HostCsrF32& base_graph,
                                    std::size_t route_request_count,
                                    std::size_t progress_interval,
                                    std::vector<RoutedNet>& nets,
-                                   const std::shared_ptr<DeltaSteppingCsrGraph>&
-                                       shared_graph,
-                                   const DeltaSteppingCsrWorkspaceOptions&
-                                       workspace_options,
+                                   const std::shared_ptr<SharedGraph>& shared_graph,
+                                   const WorkspaceOptions& workspace_options,
                                    std::vector<std::vector<DeltaSteppingCsrTelemetry>>*
                                        delta_telemetry_records = nullptr) {
   if (delta_telemetry_records != nullptr &&
@@ -1153,8 +1221,7 @@ void route_all_nets_with_workspace(const HostCsrF32& base_graph,
   }
 
   if (worker_count <= 1 || route_request_count <= 1) {
-    DeltaSteppingCsrWorkspace sssp_workspace(
-        shared_graph, stream, workspace_options);
+    Workspace sssp_workspace(shared_graph, stream, workspace_options);
     std::vector<std::uint32_t> route_tree_seen(static_cast<std::size_t>(base_graph.rows), 0);
     std::vector<int> route_parent_by_child(static_cast<std::size_t>(base_graph.rows), -1);
     std::vector<std::uint32_t> route_parent_seen(static_cast<std::size_t>(base_graph.rows), 0);
@@ -1221,8 +1288,7 @@ void route_all_nets_with_workspace(const HostCsrF32& base_graph,
       select_worker_device(worker_device);
       WorkerStream worker_stream(stream == nullptr);
       hipStream_t local_stream = worker_stream.get(stream);
-      DeltaSteppingCsrWorkspace sssp_workspace(
-          shared_graph, local_stream, workspace_options);
+      Workspace sssp_workspace(shared_graph, local_stream, workspace_options);
       std::vector<std::uint32_t> route_tree_seen(
           static_cast<std::size_t>(base_graph.rows), 0);
       std::vector<int> route_parent_by_child(
@@ -1484,6 +1550,16 @@ std::string delta_telemetry_aggregate_json(
 
 }  // namespace
 
+const char* sssp_engine_name(SsspEngine engine) noexcept {
+  switch (engine) {
+    case SsspEngine::kDeltaStep:
+      return "delta-step";
+    case SsspEngine::kBellmanFord:
+      return "bellman-ford";
+  }
+  return "unknown";
+}
+
 std::filesystem::path default_metadata_path(const std::filesystem::path& csr_path) {
   std::filesystem::path path = csr_path;
   path += ".ifmeta.bin";
@@ -1658,6 +1734,19 @@ DeltaSteppingCsrControllerMode parse_delta_controller_arg(const char* text) {
   throw std::runtime_error("invalid delta-controller: " + value);
 }
 
+SsspEngine parse_sssp_engine_arg(const char* text) {
+  const std::string value(text);
+  if (value == "delta-step" || value == "delta-stepping") {
+    return SsspEngine::kDeltaStep;
+  }
+  if (value == "bellman-ford") {
+    return SsspEngine::kBellmanFord;
+  }
+  throw std::runtime_error(
+      "invalid sssp-engine: " + value +
+      " (expected delta-step, delta-stepping, or bellman-ford)");
+}
+
 void validate_delta_controller_cli_controls(
     const PathfinderOptions& options,
     bool controller_seen,
@@ -1677,10 +1766,10 @@ void print_usage(const char* program) {
       << "Usage:\n"
       << "  " << program << " <graph.csrbin> [metadata.ifmeta.bin] [options]\n\n"
       << "Options:\n"
+      << "  --sssp-engine <engine>          delta-step (default), delta-stepping, or bellman-ford.\n"
       << "  --delta <float|auto>            Delta-stepping bucket width. Default: 1\n"
       << "  --delta-multiplier <float>      Positive sweep multiplier for --delta auto. Default: 1\n"
-      << "  --max-sssp-iters <int>          Delta-Stepping rounds; -1 for default.\n"
-      << "                                  Generic bucketed Delta-Stepping is always enforced.\n"
+      << "  --max-sssp-iters <int>          SSSP rounds; -1 for engine default.\n"
       << "  --delta-force-legacy-parent     Force generic Delta predecessor recovery for A/B comparison.\n"
       << "  --delta-controller <host-checked|reduced-round-trip>\n"
       << "                                  Generic Delta controller. Default: host-checked\n"
@@ -2061,10 +2150,11 @@ PathfinderResult run_pathfinder(const HostCsrF32& base_graph,
   validate_options(options);
   int automatic_delta_wavefront_size = 0;
   float resolved_automatic_delta = options.delta;
-  if (options.delta_auto || options.delta_telemetry) {
+  if (options.sssp_engine == SsspEngine::kDeltaStep &&
+      (options.delta_auto || options.delta_telemetry)) {
     automatic_delta_wavefront_size = current_device_wavefront_size();
   }
-  if (options.delta_auto) {
+  if (options.sssp_engine == SsspEngine::kDeltaStep && options.delta_auto) {
     PATHFINDER_PROFILE_RANGE("pathfinder.delta_auto_stats");
     // The resolver performs the same complete CSR validation while it gathers
     // the weight statistics. Avoid a second O(V + E) validation pass on large
@@ -2124,96 +2214,115 @@ PathfinderResult run_pathfinder(const HostCsrF32& base_graph,
   const std::size_t progress_interval =
       std::max<std::size_t>(1, route_request_count / 100);
 
-  PathfinderOptions delta_options = options;
-if (delta_options.delta_auto) {
-  delta_options.delta = resolved_automatic_delta;
-  std::ostringstream message;
-  message.precision(std::numeric_limits<float>::max_digits10);
-  message << "[pathfinder] resolved automatic delta="
-          << delta_options.delta
-          << " (wavefront=" << automatic_delta_wavefront_size
-          << ", multiplier=" << delta_options.delta_multiplier << ")\n";
-  std::cout << message.str();
-}
-std::cout << "[pathfinder] validating and uploading Delta graph..."
-          << std::flush;
-const auto graph_upload_started = std::chrono::steady_clock::now();
-auto shared_graph =
-    std::make_shared<DeltaSteppingCsrGraph>(base_graph, stream);
-std::cout << " done ("
-          << std::chrono::duration<double>(
-                 std::chrono::steady_clock::now() -
-                 graph_upload_started)
-                 .count()
-          << " s)\n"
-          << std::flush;
-if (delta_options.parallel_net_workers == 0) {
-  delta_options.parallel_net_workers = recommend_delta_worker_count(
-      base_graph.rows, route_request_count, stream);
-  std::cout << "[pathfinder] auto-selected "
-            << delta_options.parallel_net_workers
-            << " delta-step worker(s)\n";
-}
-DeltaSteppingCsrWorkspaceOptions workspace_options;
-workspace_options.parent_mode =
-    delta_options.delta_force_legacy_parent
-        ? DeltaSteppingCsrParentMode::kForceLegacy
-        : DeltaSteppingCsrParentMode::kAutomatic;
-workspace_options.execution_mode =
-    DeltaSteppingCsrExecutionMode::kForceGeneric;
-workspace_options.controller_mode =
-    delta_options.delta_controller_mode;
-workspace_options.controller_batch_size =
-    delta_options.delta_controller_batch_size;
-workspace_options.capacity_hints = query_capacity_hints;
-std::cout << "[pathfinder] generic bucketed Delta-Stepping is enforced\n";
-if (workspace_options.parent_mode ==
-    DeltaSteppingCsrParentMode::kForceLegacy) {
-  std::cout << "[pathfinder] selected forced legacy parent mode for "
-               "generic vector-target delta runs\n";
-}
-std::vector<std::vector<DeltaSteppingCsrTelemetry>>
-    delta_telemetry_records;
-if (delta_options.delta_telemetry) {
-  delta_telemetry_records.resize(route_request_count);
-}
-route_all_nets_with_workspace(
-    base_graph,
-    metadata,
-    delta_options,
-    stream,
-    route_request_count,
-    progress_interval,
-    result.nets,
-    shared_graph,
-    workspace_options,
-    delta_options.delta_telemetry ? &delta_telemetry_records : nullptr);
-if (delta_options.delta_telemetry) {
-  std::vector<DeltaSteppingCsrTelemetry> flattened_telemetry;
-  std::size_t telemetry_query_count = 0;
-  for (const auto& net_records : delta_telemetry_records) {
-    telemetry_query_count += net_records.size();
+  if (options.sssp_engine == SsspEngine::kDeltaStep) {
+    PathfinderOptions delta_options = options;
+    if (delta_options.delta_auto) {
+      delta_options.delta = resolved_automatic_delta;
+      std::ostringstream message;
+      message.precision(std::numeric_limits<float>::max_digits10);
+      message << "[pathfinder] resolved automatic delta="
+              << delta_options.delta
+              << " (wavefront=" << automatic_delta_wavefront_size
+              << ", multiplier=" << delta_options.delta_multiplier << ")\n";
+      std::cout << message.str();
+    }
+    std::cout << "[pathfinder] validating and uploading Delta graph..."
+              << std::flush;
+    const auto graph_upload_started = std::chrono::steady_clock::now();
+    auto shared_graph =
+        std::make_shared<DeltaSteppingCsrGraph>(base_graph, stream);
+    std::cout << " done ("
+              << std::chrono::duration<double>(
+                     std::chrono::steady_clock::now() - graph_upload_started)
+                     .count()
+              << " s)\n"
+              << std::flush;
+    if (delta_options.parallel_net_workers == 0) {
+      delta_options.parallel_net_workers = recommend_delta_worker_count(
+          base_graph.rows, route_request_count, stream);
+      std::cout << "[pathfinder] auto-selected "
+                << delta_options.parallel_net_workers
+                << " delta-step worker(s)\n";
+    }
+    DeltaSteppingCsrWorkspaceOptions workspace_options;
+    workspace_options.parent_mode =
+        delta_options.delta_force_legacy_parent
+            ? DeltaSteppingCsrParentMode::kForceLegacy
+            : DeltaSteppingCsrParentMode::kAutomatic;
+    workspace_options.execution_mode =
+        DeltaSteppingCsrExecutionMode::kForceGeneric;
+    workspace_options.controller_mode = delta_options.delta_controller_mode;
+    workspace_options.controller_batch_size =
+        delta_options.delta_controller_batch_size;
+    workspace_options.capacity_hints = query_capacity_hints;
+    std::cout << "[pathfinder] generic bucketed Delta-Stepping is enforced\n";
+    if (workspace_options.parent_mode ==
+        DeltaSteppingCsrParentMode::kForceLegacy) {
+      std::cout << "[pathfinder] selected forced legacy parent mode for "
+                   "generic vector-target delta runs\n";
+    }
+    std::vector<std::vector<DeltaSteppingCsrTelemetry>>
+        delta_telemetry_records;
+    if (delta_options.delta_telemetry) {
+      delta_telemetry_records.resize(route_request_count);
+    }
+    route_all_nets_with_workspace<DeltaSteppingCsrWorkspace>(
+        base_graph, metadata, delta_options, stream, route_request_count,
+        progress_interval, result.nets, shared_graph, workspace_options,
+        delta_options.delta_telemetry ? &delta_telemetry_records : nullptr);
+    if (delta_options.delta_telemetry) {
+      std::vector<DeltaSteppingCsrTelemetry> flattened_telemetry;
+      std::size_t telemetry_query_count = 0;
+      for (const auto& net_records : delta_telemetry_records) {
+        telemetry_query_count += net_records.size();
+      }
+      flattened_telemetry.reserve(telemetry_query_count);
+      for (const auto& net_records : delta_telemetry_records) {
+        flattened_telemetry.insert(flattened_telemetry.end(),
+                                   net_records.begin(), net_records.end());
+      }
+      const std::size_t actual_worker_count =
+          stream != nullptr
+              ? 1
+              : std::min<std::size_t>(
+                    delta_options.parallel_net_workers,
+                    std::max<std::size_t>(1, route_request_count));
+      std::cout << delta_telemetry_aggregate_json(
+                       flattened_telemetry, delta_options, delta_options.delta,
+                       automatic_delta_wavefront_size, actual_worker_count)
+                << '\n';
+    }
+  } else {
+    PathfinderOptions bellman_ford_options = options;
+    std::cout << "[pathfinder] validating and uploading Bellman-Ford graph..."
+              << std::flush;
+    const auto graph_upload_started = std::chrono::steady_clock::now();
+    auto shared_graph =
+        std::make_shared<BellmanFordCsrGraph>(base_graph, stream);
+    std::cout << " done ("
+              << std::chrono::duration<double>(
+                     std::chrono::steady_clock::now() - graph_upload_started)
+                     .count()
+              << " s)\n"
+              << std::flush;
+    if (bellman_ford_options.parallel_net_workers == 0) {
+      bellman_ford_options.parallel_net_workers =
+          recommend_bellman_ford_worker_count(
+              base_graph.rows, route_request_count, query_capacity_hints,
+              stream);
+      std::cout << "[pathfinder] auto-selected "
+                << bellman_ford_options.parallel_net_workers
+                << " bellman-ford worker(s)\n";
+    }
+    BellmanFordCsrWorkspaceOptions workspace_options;
+    workspace_options.capacity_hints = query_capacity_hints;
+    std::cout << "[pathfinder] unbounded active-frontier Bellman-Ford is "
+                 "selected\n";
+    route_all_nets_with_workspace<BellmanFordCsrWorkspace>(
+        base_graph, metadata, bellman_ford_options, stream,
+        route_request_count, progress_interval, result.nets, shared_graph,
+        workspace_options, nullptr);
   }
-  flattened_telemetry.reserve(telemetry_query_count);
-  for (const auto& net_records : delta_telemetry_records) {
-    flattened_telemetry.insert(flattened_telemetry.end(),
-                               net_records.begin(),
-                               net_records.end());
-  }
-  const std::size_t actual_worker_count =
-      stream != nullptr
-          ? 1
-          : std::min<std::size_t>(
-                delta_options.parallel_net_workers,
-                std::max<std::size_t>(1, route_request_count));
-  std::cout << delta_telemetry_aggregate_json(
-                   flattened_telemetry,
-                   delta_options,
-                   delta_options.delta,
-                   automatic_delta_wavefront_size,
-                   actual_worker_count)
-            << '\n';
-}
 
   // Worker workspaces and their graph-sized CPU/GPU scratch have been
   // released. Allocate the write-only occupancy summary now instead of
@@ -2416,6 +2525,7 @@ int main(int argc, char** argv) {
     routing::PathfinderOptions options;
     bool allow_unrouted_routes = false;
     bool delta_option_seen = false;
+    bool delta_specific_option_seen = false;
     bool delta_controller_seen = false;
     bool delta_controller_batch_size_seen = false;
     bool delta_benchmark_weights_seen = false;
@@ -2444,12 +2554,17 @@ int main(int argc, char** argv) {
         routing::print_usage(argv[0]);
         return 0;
       }
-      if (option == "--delta") {
+      if (option == "--sssp-engine") {
+        options.sssp_engine = routing::parse_sssp_engine_arg(
+            require_value("--sssp-engine"));
+      } else if (option == "--delta") {
         routing::parse_delta_arg(require_value("--delta"), &options);
         delta_option_seen = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-multiplier") {
         options.delta_multiplier = routing::parse_float_arg(
             require_value("--delta-multiplier"), "delta-multiplier");
+        delta_specific_option_seen = true;
       } else if (option == "--max-pathfinder-iters") {
         (void)routing::parse_int_arg(require_value("--max-pathfinder-iters"),
                                      "max-pathfinder-iters");
@@ -2458,28 +2573,34 @@ int main(int argc, char** argv) {
             routing::parse_int_arg(require_value("--max-sssp-iters"), "max-sssp-iters");
       } else if (option == "--delta-force-legacy-parent") {
         options.delta_force_legacy_parent = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-controller") {
         options.delta_controller_mode =
             routing::parse_delta_controller_arg(
                 require_value("--delta-controller"));
         delta_controller_seen = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-controller-batch-size") {
         options.delta_controller_batch_size = routing::parse_int_arg(
             require_value("--delta-controller-batch-size"),
             "delta-controller-batch-size");
         delta_controller_batch_size_seen = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-telemetry") {
         options.delta_telemetry = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-benchmark-weights") {
         delta_benchmark_weights =
             routing::parse_delta_benchmark_weights_arg(
                 require_value("--delta-benchmark-weights"));
         delta_benchmark_weights_seen = true;
+        delta_specific_option_seen = true;
       } else if (option == "--delta-benchmark-weight-seed") {
         delta_benchmark_weight_seed = routing::parse_u64_arg(
             require_value("--delta-benchmark-weight-seed"),
             "delta-benchmark-weight-seed");
         delta_benchmark_weight_seed_seen = true;
+        delta_specific_option_seen = true;
       } else if (option == "--capacity") {
         options.capacity = routing::parse_int_arg(require_value("--capacity"), "capacity");
       } else if (option == "--present-factor") {
@@ -2506,6 +2627,13 @@ int main(int argc, char** argv) {
       } else {
         throw std::runtime_error("unknown option: " + option);
       }
+    }
+
+    if (options.sssp_engine == routing::SsspEngine::kBellmanFord &&
+        delta_specific_option_seen) {
+      throw std::runtime_error(
+          "Delta-Stepping options cannot be used with "
+          "--sssp-engine bellman-ford");
     }
 
     if (delta_benchmark_weights_seen) {

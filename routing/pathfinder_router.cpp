@@ -191,7 +191,7 @@ void print_usage(const char* program) {
       << "  --routes-to-phys <path>        Route reconstructor. Env: ROUTES_TO_PHYS\n"
       << "  Env PATHFINDER_PROFILE_COMMAND Shell prefix applied only to the inner pathfinder command.\n"
       << "  --strict-routing               Fail instead of writing partial routes.\n"
-      << "                                 Generic bucketed Delta-Stepping is always enforced.\n"
+      << "  --sssp-engine <engine>         delta-step (default), delta-stepping, or bellman-ford.\n"
       << "  --delta-telemetry              Forward opt-in Delta-Stepping runtime telemetry.\n"
       << "  --delta-force-legacy-parent    Forwarded for generic Delta parent-path A/B comparison.\n"
       << "  --delta <float|auto>           Forwarded to pathfinder.\n"
@@ -240,6 +240,8 @@ Options parse_args(int argc, char** argv) {
   std::string delta_benchmark_weights;
   bool delta_benchmark_weight_seed_provided = false;
   bool delta_telemetry = false;
+  bool delta_specific_option_provided = false;
+  std::string sssp_engine = "delta-step";
 
   for (int i = 3; i < argc; ++i) {
     const std::string option = argv[i];
@@ -267,23 +269,38 @@ Options parse_args(int argc, char** argv) {
       options.routes_to_phys = require_value("--routes-to-phys");
     } else if (option == "--strict-routing") {
       options.allow_unrouted = false;
+    } else if (option == "--sssp-engine") {
+      sssp_engine = require_value("--sssp-engine");
+      if (sssp_engine != "delta-step" &&
+          sssp_engine != "delta-stepping" &&
+          sssp_engine != "bellman-ford") {
+        throw std::runtime_error(
+            "invalid sssp-engine: " + sssp_engine +
+            " (expected delta-step, delta-stepping, or bellman-ford)");
+      }
+      options.pathfinder_args.push_back(option);
+      options.pathfinder_args.push_back(sssp_engine);
     } else if (option == "--delta-force-legacy-parent") {
       options.pathfinder_args.push_back(option);
+      delta_specific_option_provided = true;
     } else if (option == "--delta-telemetry") {
       if (!delta_telemetry) {
         options.pathfinder_args.push_back(option);
         delta_telemetry = true;
       }
+      delta_specific_option_provided = true;
     } else if (option == "--delta-benchmark-weights") {
       delta_benchmark_weights = require_value("--delta-benchmark-weights");
       options.pathfinder_args.push_back(option);
       options.pathfinder_args.push_back(delta_benchmark_weights);
+      delta_specific_option_provided = true;
     } else if (option == "--delta-benchmark-weight-seed") {
       const std::string seed =
           require_value("--delta-benchmark-weight-seed");
       delta_benchmark_weight_seed_provided = true;
       options.pathfinder_args.push_back(option);
       options.pathfinder_args.push_back(seed);
+      delta_specific_option_provided = true;
     } else if (option == "--delta" ||
                option == "--delta-multiplier" ||
                option == "--delta-controller" ||
@@ -299,6 +316,11 @@ Options parse_args(int argc, char** argv) {
                option == "--history-factor") {
       options.pathfinder_args.push_back(option);
       options.pathfinder_args.push_back(require_value(option.c_str()));
+      if (option == "--delta" || option == "--delta-multiplier" ||
+          option == "--delta-controller" ||
+          option == "--delta-controller-batch-size") {
+        delta_specific_option_provided = true;
+      }
     } else {
       throw std::runtime_error("unknown option: " + option);
     }
@@ -312,6 +334,11 @@ Options parse_args(int argc, char** argv) {
     throw std::runtime_error(
         "--delta-benchmark-weight-seed requires "
         "--delta-benchmark-weights mixed");
+  }
+  if (sssp_engine == "bellman-ford" && delta_specific_option_provided) {
+    throw std::runtime_error(
+        "Delta-Stepping options cannot be used with "
+        "--sssp-engine bellman-ford");
   }
   return options;
 }

@@ -1776,16 +1776,20 @@ __global__ void relax_light_edges_kernel(const int* frontier,
         const bool append_touched = decreased && infinite_float(old);
         bool append_current = false;
         bool append_pending = false;
+        if constexpr (TrackParents) {
+          // Equal-distance candidates must reach the packed-key minimum-CAS
+          // for deterministic tie-breaking.
+          if (light && nd <= old) {
+            publish_parent_candidate<true, UseEdgeParent>(
+                &parent_key[v], u, e, nd);
+          }
+        }
         if (decreased) {
           if constexpr (CollectTelemetry) {
             ++telemetry[kTelemetrySuccessfulRelaxations];
           }
           if constexpr (AllEdgesLight) {
             candidate_bucket = bucket_index(nd, delta);
-          }
-          if constexpr (TrackParents) {
-            publish_parent_candidate<true, UseEdgeParent>(
-                &parent_key[v], u, e, nd);
           }
           const int b = candidate_bucket;
           if (b == current_bucket) {
@@ -1917,13 +1921,17 @@ __global__ void relax_heavy_edges_kernel(const int* heavy_vertices,
         const bool decreased = heavy && nd < old;
         const bool append_touched = decreased && infinite_float(old);
         bool append_pending = false;
+        if constexpr (TrackParents) {
+          // Equal-distance candidates must reach the packed-key minimum-CAS
+          // for deterministic tie-breaking.
+          if (heavy && nd <= old) {
+            publish_parent_candidate<true, UseEdgeParent>(
+                &parent_key[v], u, e, nd);
+          }
+        }
         if (decreased) {
           if constexpr (CollectTelemetry) {
             ++telemetry[kTelemetrySuccessfulRelaxations];
-          }
-          if constexpr (TrackParents) {
-            publish_parent_candidate<true, UseEdgeParent>(
-                &parent_key[v], u, e, nd);
           }
           const int b = candidate_bucket;
           if (b > current_bucket && b < kNoBucket) {
@@ -2522,15 +2530,19 @@ __device__ void cooperative_relax_light_range(
       const bool append_touched = decreased && infinite_float(old);
       bool append_current = false;
       bool append_pending = false;
+      if constexpr (TrackParents) {
+        // Equal-distance candidates must reach the packed-key minimum-CAS
+        // for deterministic tie-breaking.
+        if (light && nd <= old) {
+          publish_parent_candidate<true, UseEdgeParent>(
+              &args.parent_key[v], u, e, nd);
+        }
+      }
       if (decreased) {
         if constexpr (CollectTelemetry) {
           ++telemetry[kTelemetrySuccessfulRelaxations];
         }
         if (all_edges_light) candidate_bucket = bucket_index(nd, args.delta);
-        if constexpr (TrackParents) {
-          publish_parent_candidate<true, UseEdgeParent>(
-              &args.parent_key[v], u, e, nd);
-        }
         if (candidate_bucket == current_bucket) {
           if constexpr (UseCurrentGenerations) {
             append_current =
@@ -2652,13 +2664,17 @@ __device__ void cooperative_relax_heavy_range(
         const bool decreased = heavy && nd < old;
         const bool append_touched = decreased && infinite_float(old);
         bool append_pending = false;
+        if constexpr (TrackParents) {
+          // Equal-distance candidates must reach the packed-key minimum-CAS
+          // for deterministic tie-breaking.
+          if (heavy && nd <= old) {
+            publish_parent_candidate<true, UseEdgeParent>(
+                &args.parent_key[v], u, e, nd);
+          }
+        }
         if (decreased) {
           if constexpr (CollectTelemetry) {
             ++telemetry[kTelemetrySuccessfulRelaxations];
-          }
-          if constexpr (TrackParents) {
-            publish_parent_candidate<true, UseEdgeParent>(
-                &args.parent_key[v], u, e, nd);
           }
           append_pending =
               atomicCAS(&args.in_pending[v], 0, 1) == 0;

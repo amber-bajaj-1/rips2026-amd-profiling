@@ -17,11 +17,18 @@ TARGET_KERNELS = (
     "materialize_predecessors_kernel",
     "measure_edge_parent_target_paths_kernel",
     "fill_edge_parent_target_paths_kernel",
+    "clear_workspace_kernel",
+    "seed_sources_kernel",
+    "relax_frontier_kernel",
+    "update_target_status_kernel",
+    "summarize_target_paths_kernel",
+    "materialize_target_paths_kernel",
 )
 MATERIALIZE_KERNELS = (
     "materialize_predecessors_kernel",
     "measure_edge_parent_target_paths_kernel",
     "fill_edge_parent_target_paths_kernel",
+    "materialize_target_paths_kernel",
 )
 
 

@@ -67,6 +67,7 @@ def main() -> None:
                         "materialize_predecessors_kernel",
                         "measure_edge_parent_target_paths_kernel",
                         "fill_edge_parent_target_paths_kernel",
+                        "materialize_target_paths_kernel",
                     )
                 ):
                     materialize_rows[counter] += 1
