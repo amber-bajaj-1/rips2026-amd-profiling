@@ -10,8 +10,8 @@ From this repository, choose a writable workspace root and run:
 ```bash
 chmod +x setup-tpe.sh
 ./setup-tpe.sh /home/jovyan
-source /path/to/workspace/rips2026-amd-profiling/environment.sh
-cd /path/to/workspace/rips2026-amd-profiling
+source /home/jovyan/rips2026-amd-profiling/environment.sh
+cd /home/jovyan/rips2026-amd-profiling
 ```
 
 The setup script retains the profiling configuration, installs the local
