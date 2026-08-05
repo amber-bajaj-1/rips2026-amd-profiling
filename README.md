@@ -9,7 +9,7 @@ From this repository, choose a writable workspace root and run:
 
 ```bash
 chmod +x setup-tpe.sh
-./setup-tpe.sh /path/to/workspace
+./setup-tpe.sh /home/jovyan
 source /path/to/workspace/rips2026-amd-profiling/environment.sh
 cd /path/to/workspace/rips2026-amd-profiling
 ```
