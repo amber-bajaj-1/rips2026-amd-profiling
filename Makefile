@@ -36,11 +36,13 @@ endif
 
 BENCHMARK ?=
 PATHFINDER_SSSP_ENGINE ?= delta-step
-SUPPORTED_SSSP_ENGINES := delta-step delta-stepping bellman-ford
+SUPPORTED_SSSP_ENGINES := delta delta-step delta-stepping delta_stepping \
+	bellman-ford bellman_ford bf11 bellman-ford-11 bellman_ford_11
 ifeq ($(filter $(PATHFINDER_SSSP_ENGINE),$(SUPPORTED_SSSP_ENGINES)),)
 $(error PATHFINDER_SSSP_ENGINE must be one of: $(SUPPORTED_SSSP_ENGINES))
 endif
-PATHFINDER_USES_DELTA := $(if $(filter delta-step delta-stepping,$(PATHFINDER_SSSP_ENGINE)),1,)
+PATHFINDER_USES_DELTA := $(if $(filter delta delta-step delta-stepping delta_stepping,$(PATHFINDER_SSSP_ENGINE)),1,)
+PATHFINDER_USES_BF11 := $(if $(filter bellman-ford bellman_ford bf11 bellman-ford-11 bellman_ford_11,$(PATHFINDER_SSSP_ENGINE)),1,)
 # This matches PathfinderOptions::delta. A --delta flag is emitted only when
 # the caller overrides the built-in value.
 DELTA ?= 1
@@ -48,7 +50,9 @@ PATHFINDER_ARGS ?=
 SSSP_ENGINE_ARG = --sssp-engine $(PATHFINDER_SSSP_ENGINE)
 DELTA_ARG = $(if $(PATHFINDER_USES_DELTA),$(if $(strip $(DELTA)),$(if $(filter 1,$(strip $(DELTA))),,--delta $(DELTA))))
 RUN_PATHFINDER_ARGS = $(SSSP_ENGINE_ARG) $(DELTA_ARG) $(PATHFINDER_ARGS)
-PROFILE_PATHFINDER_ARGS = $(RUN_PATHFINDER_ARGS) $(if $(PATHFINDER_USES_DELTA),--delta-telemetry)
+PROFILE_PATHFINDER_ARGS = $(RUN_PATHFINDER_ARGS) \
+	$(if $(PATHFINDER_USES_DELTA),--delta-telemetry) \
+	$(if $(PATHFINDER_USES_BF11),--bf11-telemetry)
 DEVICE_FILE ?= $(BENCHMARK_DIR)/xcvu3p.device
 DEVICE_GRAPH ?= $(BENCHMARK_DIR)/xcvu3p.full-poc-base-wire.devicegraph
 REBUILD_DEVICE_GRAPH ?= 0
@@ -87,23 +91,31 @@ DELTA_SOURCES := \
 DELTA_HEADERS := \
 	$(wildcard delta_stepping/*.hpp)
 BELLMAN_FORD_SOURCES := \
-	bellman_ford/bellman_ford.cpp
+	bellman_ford/bf11.cpp
 BELLMAN_FORD_HEADERS := \
 	$(wildcard bellman_ford/*.hpp)
 SSSP_HEADERS := \
 	$(wildcard sssp/*.hpp)
 ROUTING_SOURCES := \
-	routing/pathfinder.cpp
+	routing/pathfinder.cpp \
+	routing/csr_artifact.cpp
 ROUTING_HEADERS := \
 	routing/pathfinder.hpp \
+	routing/bounds.hpp \
+	routing/csr_artifact.hpp \
+	routing/route_policy.hpp \
+	pre-process/routing_csr_sidecars.hpp \
 	pre-process/import_policy.hpp
 PREPROCESS_HEADERS := \
 	pre-process/device_routing_graph.hpp \
+	pre-process/routing_csr_sidecars.hpp \
+	routing/bounds.hpp \
 	pre-process/gzip_io.hpp \
 	pre-process/import_policy.hpp
 
-.PHONY: all router pipeline interchange-tools device-graph help run \
-	profile profile-counters profile-wait profile-diagnostics profile-all clean
+.PHONY: all router pipeline interchange-tools device-graph help run test \
+	test-host test-hip profile profile-counters profile-wait \
+	profile-diagnostics profile-all clean
 
 .NOTPARALLEL: profile-diagnostics profile-all
 
@@ -132,7 +144,7 @@ PathFinderFile: routing/pathfinder_router.cpp
 pathfinder: $(ROUTING_SOURCES) $(ROUTING_HEADERS) \
 		$(DELTA_SOURCES) $(DELTA_HEADERS) \
 		$(BELLMAN_FORD_SOURCES) $(BELLMAN_FORD_HEADERS) $(SSSP_HEADERS)
-	$(HIPCC) $(HIP_FLAGS) $(PATHFINDER_ROCTX_FLAGS) \
+	$(HIPCC) $(HIP_FLAGS) -DBF11_NO_MAIN $(PATHFINDER_ROCTX_FLAGS) \
 		$(ROUTING_SOURCES) $(DELTA_SOURCES) $(BELLMAN_FORD_SOURCES) \
 		-pthread $(PATHFINDER_ROCTX_LIBS) -o $@
 
@@ -179,6 +191,49 @@ routes_to_phys: \
 		"$(SCHEMA_DIR)/PhysicalNetlist.capnp.c++" \
 		"$(SCHEMA_DIR)/References.capnp.c++" \
 		$(INTERCHANGE_LIBS) -o $@
+
+test: test-host
+
+test-host:
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/routing_bounds_test.cpp -o /tmp/rips-routing-bounds-test
+	/tmp/rips-routing-bounds-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/routing_csr_sidecars_test.cpp -o /tmp/rips-routing-sidecars-test
+	/tmp/rips-routing-sidecars-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/bf11_worker_policy_test.cpp -o /tmp/rips-bf11-worker-policy-test
+	/tmp/rips-bf11-worker-policy-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/route_policy_test.cpp -o /tmp/rips-route-policy-test
+	/tmp/rips-route-policy-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/pathfinder_router_args_test.cpp \
+		-o /tmp/rips-pathfinder-router-args-test
+	/tmp/rips-pathfinder-router-args-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -I. \
+		tests/csr_v3_artifact_roundtrip_test.cpp \
+		routing/csr_artifact.cpp \
+		-o /tmp/rips-csr-v3-artifact-roundtrip-test
+	/tmp/rips-csr-v3-artifact-roundtrip-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -c \
+		pre-process/device_routing_graph.cpp \
+		-o /tmp/rips-device-routing-graph-test.o
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		-Itests/fake_hip -c routing/pathfinder.cpp \
+		-o /tmp/rips-pathfinder-host-syntax-test.o
+	python3 tests/artifact_sidecar_source_test.py
+	python3 tests/bf11_source_structure_test.py
+	python3 tests/delta_routing_bounds_source_test.py
+
+test-hip:
+	@command -v "$(HIPCC)" >/dev/null 2>&1 || \
+		{ echo "hipcc is unavailable; install ROCm before running GPU tests."; exit 2; }
+	$(HIPCC) -std=c++17 -O2 -x hip -DBF11_NO_MAIN -I. \
+		tests/routing_engines_bounds_hip_test.cpp \
+		delta_stepping/delta_stepping.cpp bellman_ford/bf11.cpp \
+		-pthread -o /tmp/rips-routing-engines-bounds-hip-test
+	/tmp/rips-routing-engines-bounds-hip-test
 
 define require_run_inputs
 	@test -n "$(strip $(INPUT_PHYS))" || \
@@ -279,6 +334,13 @@ help:
 	@echo "  make run BENCHMARK=logicnets_jscl"
 	@echo "  make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bellman-ford"
 	@echo "  Delta defaults to 1; use DELTA=auto or DELTA=<positive-number> to override it."
+	@echo "  Both engines are bounded by default with X=2, Y=14 margins and one unbounded fallback."
+	@echo "  Override with PATHFINDER_ARGS='--bbox-margin-x 4 --bbox-margin-y 20'."
+	@echo "  Disable bounds explicitly with PATHFINDER_ARGS='--unbounded'."
+	@echo
+	@echo "Run host policy/parser tests, then HIP engine parity tests on ROCm:"
+	@echo "  make test-host"
+	@echo "  make test-hip"
 	@echo
 	@echo "Collect the runtime trace and timing statistics:"
 	@echo "  make profile BENCHMARK=logicnets_jscl"

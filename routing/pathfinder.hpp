@@ -1,8 +1,12 @@
 #pragma once
 
-#include "../bellman_ford/bellman_ford.hpp"
+#include "../bellman_ford/bf11.hpp"
 #include "../delta_stepping/delta_stepping.hpp"
 #include "../pre-process/import_policy.hpp"
+#include "../pre-process/routing_csr_sidecars.hpp"
+#include "bounds.hpp"
+#include "csr_artifact.hpp"
+#include "route_policy.hpp"
 
 #include <hip/hip_runtime.h>
 
@@ -111,6 +115,11 @@ struct RoutedSink {
 struct RoutedNet {
   std::uint64_t net_string = 0;
   bool reached_all_sinks = false;
+  bool sssp_certified = false;
+  bool bounded_query = false;
+  bool target_missing_coordinates = false;
+  bool used_unbounded_retry = false;
+  RoutingQueryBounds query_bounds{};
   std::vector<RoutedSink> sinks;
   std::vector<int> unique_nodes;
 };
@@ -134,6 +143,10 @@ struct PathfinderOptions {
       DeltaSteppingCsrControllerMode::kHostChecked;
   int delta_controller_batch_size =
       static_cast<int>(kDeltaSteppingCsrRecommendedControllerBatchSize);
+  // Shared by both engines. Bounds are enabled for every normal routing run.
+  RoutingBoundsConfig bounds{};
+  int target_check_interval = 1;
+  bool bellman_ford_telemetry = false;
 };
 
 struct PathfinderResult {
@@ -142,14 +155,13 @@ struct PathfinderResult {
   int iterations_used = 0;
   int overused_nodes = 0;
   int max_occupancy = 0;
+  std::size_t bounded_queries = 0;
+  std::size_t unbounded_missing_coordinate_queries = 0;
+  std::size_t unbounded_fallback_retries = 0;
   std::vector<int> occupancy;
   std::vector<RoutedNet> nets;
 };
 
-HostCsrF32 load_csrbin(
-    const std::filesystem::path& path,
-    std::optional<interchange::InterchangeArtifactPairId>* artifact_pair_id =
-        nullptr);
 RoutingMetadata load_interchange_metadata(
     const std::filesystem::path& path,
     InterchangeMetadataLoadMode mode = InterchangeMetadataLoadMode::kFull);
@@ -170,7 +182,9 @@ std::vector<PathEdge> reconstruct_shortest_path(
 PathfinderResult run_pathfinder(const HostCsrF32& base_graph,
                                 const RoutingMetadata& metadata,
                                 const PathfinderOptions& options,
-                                hipStream_t stream = nullptr);
+                                hipStream_t stream = nullptr,
+                                const interchange::RoutingCsrSidecars*
+                                    routing_sidecars = nullptr);
 
 std::string string_at(const RoutingMetadata& metadata, std::uint64_t index);
 

@@ -1,11 +1,12 @@
 #pragma once
 
+#include <hip/hip_runtime.h>
+
 #include "type_definitions.hpp"
 #include "delta_stepping_auto_delta.hpp"
 #include "delta_stepping_policy.hpp"
+#include "../routing/bounds.hpp"
 #include "sssp_query_capacity.hpp"
-
-#include <hip/hip_runtime.h>
 
 #include <cmath>
 #include <cstdint>
@@ -85,6 +86,10 @@ struct DeltaSteppingCsrRunOptions {
   // Process exactly the distance buckets that can contain a path strictly
   // below this value. Infinity preserves an ordinary unbounded run.
   float exclusive_distance_limit = std::numeric_limits<float>::infinity();
+  // Disabled by default so every existing low-level API preserves its
+  // complete-graph behavior. Bounded runs require routing coordinates on the
+  // immutable shared graph.
+  routing::RoutingQueryBounds routing_bounds{};
 };
 
 const char* delta_stepping_execution_path_name(
@@ -191,6 +196,17 @@ class DeltaSteppingCsrGraph {
   DeltaSteppingCsrGraph(const HostCsrF32& adjacency,
                         hipStream_t stream,
                         DeltaSteppingCsrGraphOptions options);
+  DeltaSteppingCsrGraph(
+      const HostCsrF32& adjacency,
+      const std::vector<std::int32_t>& route_end_x,
+      const std::vector<std::int32_t>& route_end_y,
+      hipStream_t stream = nullptr);
+  DeltaSteppingCsrGraph(
+      const HostCsrF32& adjacency,
+      const std::vector<std::int32_t>& route_end_x,
+      const std::vector<std::int32_t>& route_end_y,
+      hipStream_t stream,
+      DeltaSteppingCsrGraphOptions options);
   ~DeltaSteppingCsrGraph();
 
   DeltaSteppingCsrGraph(const DeltaSteppingCsrGraph&) = delete;
@@ -200,11 +216,14 @@ class DeltaSteppingCsrGraph {
 
   // A moved-from graph has no storage and reports false.
   bool uses_32_bit_offsets() const noexcept;
+  bool has_routing_coordinates() const noexcept;
+  const std::vector<std::int32_t>& route_end_x() const noexcept;
+  const std::vector<std::int32_t>& route_end_y() const noexcept;
 
  private:
   // Workspaces retain this immutable backing allocation directly, so moving
   // or replacing the public graph wrapper cannot invalidate live workspaces.
-  std::shared_ptr<const Impl> impl_;
+  std::shared_ptr<Impl> impl_;
   friend class DeltaSteppingCsrWorkspace;
 };
 
@@ -406,19 +425,23 @@ class DeltaSteppingCsrWorkspace {
       throw std::invalid_argument(
           "Delta-Stepping distance limit must be nonnegative or infinity");
     }
+    routing::validate_query_bounds(run_options.routing_bounds);
     if (run_options.telemetry != nullptr) {
       *run_options.telemetry = DeltaSteppingCsrTelemetry{};
     }
     active_telemetry_ = run_options.telemetry;
     active_distance_limit_ = run_options.exclusive_distance_limit;
+    active_routing_bounds_ = run_options.routing_bounds;
     try {
       DeltaSteppingCsrResult result = run();
       active_telemetry_ = nullptr;
       active_distance_limit_ = std::numeric_limits<float>::infinity();
+      active_routing_bounds_ = routing::RoutingQueryBounds{};
       return result;
     } catch (...) {
       active_telemetry_ = nullptr;
       active_distance_limit_ = std::numeric_limits<float>::infinity();
+      active_routing_bounds_ = routing::RoutingQueryBounds{};
       throw;
     }
   }
@@ -436,6 +459,7 @@ class DeltaSteppingCsrWorkspace {
   std::uint32_t controller_generation_seed_for_testing_ = 0;
   DeltaSteppingCsrTelemetry* active_telemetry_ = nullptr;
   float active_distance_limit_ = std::numeric_limits<float>::infinity();
+  routing::RoutingQueryBounds active_routing_bounds_{};
   std::unique_ptr<Impl> impl_;
 };
 

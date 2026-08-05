@@ -1,9 +1,18 @@
-# RIPS AMD SSSP Profiling
+# RIPS AMD congestion-free PathFinder profiling
 
-This repository builds one GPU `pathfinder` executable with two runtime SSSP
-engines: Delta-Stepping and Bellman-Ford. 'pathfinder' runs one SSSP calculation for each net in the benchmarks. 
+This repository is a focused extraction of the congestion-free routing path.
+It builds one GPU `pathfinder` executable with exactly two runtime SSSP
+engines:
 
-## 1. Set up the AUP workspace
+- BF11 Bellman-Ford (`bellman-ford` or `bf11`)
+- generic bucketed Delta-Stepping (`delta-step` or `delta-stepping`)
+
+Both engines route the same multi-source/multi-target PathFinder queries and
+use the same coordinate bounds, certificate checks, route reconstruction, and
+bounded-to-unbounded fallback policy. Unit BFS and the other standalone
+Bellman-Ford experiments are intentionally outside this profiling target.
+
+## Set up and build
 
 From this repository, choose a writable workspace root and run:
 
@@ -12,92 +21,142 @@ chmod +x setup-tpe.sh
 ./setup-tpe.sh /home/jovyan
 source /home/jovyan/rips2026-amd-profiling/environment.sh
 cd /home/jovyan/rips2026-amd-profiling
-```
-
-The setup script retains the profiling configuration, installs the local
-dependencies, prepares the benchmark/device artifacts, and builds the full
-pipeline.
-
-## 2. Build the pipeline
-
-```bash
 make pipeline
 make device-graph
 ```
 
-Both SSSP engines are compiled into the same `pathfinder` executable; selecting
-an engine never requires rebuilding.
+Both engines are compiled into the same executable, so engine selection does
+not require a rebuild.
 
-## 3. Select an SSSP engine
+## Coordinate bounds and CSR v3
 
-Use `PATHFINDER_SSSP_ENGINE=delta-step` (or the alias `delta-stepping`) for
-Delta-Stepping. It is the default. Use
-`PATHFINDER_SSSP_ENGINE=bellman-ford` for the unbounded active-frontier
-Bellman-Ford backend.
+Normal routing is bounded by default for both engines. The default inclusive
+query box is the envelope of every known source and target coordinate,
+expanded by X=2 and Y=14. A known-coordinate destination outside that box is
+not relaxed or enqueued. Nodes whose route-end coordinate is the paired
+missing sentinel remain admissible, matching BF11.
 
-## 4. Run a benchmark
+Bounded routing requires a CSR v3 artifact with validated `route_end_x` and
+`route_end_y` sidecars. The normal conversion pipeline writes v3. If an older
+artifact is supplied while bounds are enabled, PathFinder fails with an error
+that asks you to regenerate it or choose explicit unbounded mode. Legacy CSR
+v1/v2 remains supported with `--unbounded` (or `--bf11-unbounded`).
 
-Delta-Stepping example:
+Useful controls, passed through `PATHFINDER_ARGS`, are:
+
+| Option | Default | Meaning |
+|---|---:|---|
+| `--bbox-margin-x N` | `2` | Nonnegative horizontal margin |
+| `--bbox-margin-y N` | `14` | Nonnegative vertical margin |
+| `--unbounded` | off | Disable coordinate bounds explicitly |
+| `--no-unbounded-fallback` | off | Keep an unreachable bounded query bounded |
+| `--target-check-interval N` | `1` | BF11 target-certificate check interval |
+
+The BF11 compatibility names remain accepted and forwarded:
+`--bf11-bbox-margin-x`, `--bf11-bbox-margin-y`, `--bf11-unbounded`,
+`--bf11-no-unbounded-fallback`, and `--bf11-target-check-interval`.
+
+When fallback is enabled, a bounded query that does not return all requested
+targets with a completion certificate is reset and rerun unbounded exactly
+once. A target without coordinates starts unbounded when fallback is enabled;
+that is recorded separately and is not a retry. If fallback is disabled, such
+a target is an actionable input error. Fallback does not compare a successful
+in-bounds path with possible out-of-bounds paths, so bounded routing is not a
+global-shortest-path guarantee.
+
+PathFinder accepts a route only when the engine reports `converged` or
+`stopped_on_target`. A finite distance from an iteration-limited,
+uncertified run is never extracted as a final route.
+
+Each run emits a `routing_bounds` JSON record containing the enabled state,
+margins, fallback setting, bounded-query count, missing-coordinate query count,
+unbounded-retry count, and a small sample of computed query boxes. Per-net
+route JSON also records certificate, bounded, and retry state.
+
+## Run both engines on identical bounds
+
+Delta-Stepping is the default:
 
 ```bash
 make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
 ```
 
-Bellman-Ford example:
+Run BF11 with the same default bounds:
 
 ```bash
-make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bellman-ford
+make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
+```
+
+Use identical custom bounds for an A/B comparison:
+
+```bash
+make run \
+  BENCHMARK=logicnets_jscl \
+  PATHFINDER_SSSP_ENGINE=delta-step \
+  PATHFINDER_ARGS='--bbox-margin-x 4 --bbox-margin-y 20'
+
+make run \
+  BENCHMARK=logicnets_jscl \
+  PATHFINDER_SSSP_ENGINE=bf11 \
+  PATHFINDER_ARGS='--bbox-margin-x 4 --bbox-margin-y 20'
 ```
 
 Bundled benchmark names are `logicnets_jscl`, `boom_med_pb`, `vtr_mcml`, and
 `rosetta_fd`. Routed physical netlists are written under `benchmarks/`.
 
-## 5. Run profiling targets
+## Profiling
 
-The selected engine is forwarded to every profiling command:
+The selected engine and all bounds controls are forwarded to every profiling
+entry point:
 
 ```bash
 make profile BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
-make profile-counters BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bellman-ford
+make profile-counters BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
 make profile-diagnostics BENCHMARK=logicnets_jscl
 make profile-all BENCHMARK=logicnets_jscl
 ```
 
 Results are written below
-`profiling/<benchmark>/<YYYYMMDD-HHMMSS>/`. `profile` collects the runtime
-trace and statistics; `profile-counters` collects the configured gfx115x
-counters; `profile-diagnostics` also runs the selected wait-counter path; and
-`profile-all` runs the existing profiling flow sequentially.
+`profiling/<benchmark>/<YYYYMMDD-HHMMSS>/`. Profiled Delta runs enable Delta
+telemetry; profiled BF11 runs enable BF11 telemetry. BF11 output includes
+persistent/host-controller counts, sparse reset counts, workspace memory, and
+phase timing when telemetry is enabled. The generic Delta output includes its
+resolved delta, controller, queue/work counters, and worker count.
 
-## 6. Important runtime options
-
-Options can be passed through `PATHFINDER_ARGS`:
+Important shared and engine-specific controls include:
 
 | Option | Applies to | Purpose |
 |---|---|---|
 | `--net-limit N` | Both | Route only the first `N` requests |
-| `--parallel-net-workers N` | Both | Set independent workers; `0` selects automatically |
-| `--max-sssp-iters N` | Both | Limit SSSP rounds; `-1` uses the engine default |
-| `DELTA=auto` or `DELTA=N` | Delta only | Select automatic or numeric bucket width |
-| `--delta-controller MODE` | Delta only | Select `host-checked` or `reduced-round-trip` |
-| `--delta-controller-batch-size N` | Delta only | Set reduced-round-trip batch size |
-| `--delta-force-legacy-parent` | Delta only | Use legacy predecessor recovery for comparison |
-| `--delta-telemetry` | Delta only | Emit aggregate Delta telemetry on a regular run |
+| `--parallel-net-workers N` | Both | Independent streams/workspaces; `0` selects automatically |
+| `--max-sssp-iters N` | Both | Limit SSSP work; `-1` uses the engine default |
+| `DELTA=auto` or `DELTA=N` | Delta | Automatic or numeric bucket width |
+| `--delta-multiplier N` | Delta | Scale automatic delta |
+| `--delta-controller MODE` | Delta | `host-checked` or `reduced-round-trip` |
+| `--delta-controller-batch-size N` | Delta | Reduced-round-trip batch size |
+| `--delta-force-legacy-parent` | Delta | Legacy predecessor recovery A/B control |
+| `--delta-telemetry` | Delta | Emit aggregate scheduler telemetry |
+| `--bf11-telemetry` | BF11 | Emit phase, work, reset, and memory telemetry |
 | `--strict-routing` | Both | Fail instead of writing partial routes |
 | `--keep-work-dir` / `--work-dir PATH` | Both | Preserve or choose intermediate artifacts |
 
-For example:
+Delta-only options are rejected with BF11. This focused build always uses the
+real generic Delta bucket scheduler, including for unit-weight inputs; the
+compatibility flag `--delta-force-generic` is therefore accepted as a no-op.
+
+## Tests
+
+Run all tests available without an AMD GPU:
 
 ```bash
-make run \
-  BENCHMARK=logicnets_jscl \
-  PATHFINDER_SSSP_ENGINE=bellman-ford \
-  PATHFINDER_ARGS='--net-limit 100 --parallel-net-workers 2'
+make test-host
 ```
 
-Delta-only options are rejected when Bellman-Ford is selected. Profiled Delta
-runs add `--delta-telemetry` automatically; Bellman-Ford runs retain normal
-ROCTX/runtime instrumentation without Delta telemetry.
+On a ROCm system with an AMD GPU, also run:
+
+```bash
+make test-hip
+```
 
 Use `make help`, `./pathfinder --help`, or `./PathFinderFile --help` for the
 complete command-line reference.

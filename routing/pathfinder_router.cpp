@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -93,6 +94,41 @@ std::string command_to_string(const std::vector<std::string>& argv) {
     out << shell_quote(argv[i]);
   }
   return out.str();
+}
+
+int parse_router_integer(const std::string& text, const char* option) {
+  if (text.empty()) {
+    throw std::runtime_error(std::string(option) +
+                             " requires an integer value");
+  }
+  char* end = nullptr;
+  errno = 0;
+  const long long value = std::strtoll(text.c_str(), &end, 10);
+  if (errno == ERANGE || end == text.c_str() || *end != '\0' ||
+      value < std::numeric_limits<int>::min() ||
+      value > std::numeric_limits<int>::max()) {
+    throw std::runtime_error(std::string(option) +
+                             " requires an integer value");
+  }
+  return static_cast<int>(value);
+}
+
+std::string require_nonnegative_router_integer(std::string value,
+                                               const char* option) {
+  if (parse_router_integer(value, option) < 0) {
+    throw std::runtime_error(std::string(option) +
+                             " requires a nonnegative integer value");
+  }
+  return value;
+}
+
+std::string require_positive_router_integer(std::string value,
+                                            const char* option) {
+  if (parse_router_integer(value, option) <= 0) {
+    throw std::runtime_error(std::string(option) +
+                             " requires a positive integer value");
+  }
+  return value;
 }
 
 void print_progress(int completed, int total, const std::string& label) {
@@ -191,7 +227,7 @@ void print_usage(const char* program) {
       << "  --routes-to-phys <path>        Route reconstructor. Env: ROUTES_TO_PHYS\n"
       << "  Env PATHFINDER_PROFILE_COMMAND Shell prefix applied only to the inner pathfinder command.\n"
       << "  --strict-routing               Fail instead of writing partial routes.\n"
-      << "  --sssp-engine <engine>         delta-step (default), delta-stepping, or bellman-ford.\n"
+      << "  --sssp-engine <engine>         delta-step (default), delta-stepping, bellman-ford, or bf11.\n"
       << "  --delta-telemetry              Forward opt-in Delta-Stepping runtime telemetry.\n"
       << "  --delta-force-legacy-parent    Forwarded for generic Delta parent-path A/B comparison.\n"
       << "  --delta <float|auto>           Forwarded to pathfinder.\n"
@@ -204,6 +240,21 @@ void print_usage(const char* program) {
       << "                                 Forward a reproducible benchmark weight family.\n"
       << "  --delta-benchmark-weight-seed <nonnegative-int>\n"
       << "                                 Forward a seed; valid only with mixed weights.\n"
+      << "  --unbounded                    Disable coordinate bounds for either engine.\n"
+      << "  --bounds                       Explicitly enable coordinate bounds (the default).\n"
+      << "  --bbox-margin-x <int>          Nonnegative horizontal margin. Default: 2\n"
+      << "  --bbox-margin-y <int>          Nonnegative vertical margin. Default: 14\n"
+      << "  --no-unbounded-fallback        Keep unreachable queries bounded.\n"
+      << "  --bf11-unbounded               Compatibility alias for --unbounded.\n"
+      << "  --bf11-bbox-margin-x <int>     Compatibility margin alias.\n"
+      << "  --bf11-bbox-margin-y <int>     Compatibility margin alias.\n"
+      << "  --bf11-no-unbounded-fallback   Compatibility fallback alias.\n"
+      << "  --bf11-target-check-interval <positive-int>\n"
+      << "                                 Forward BF11 target polling interval.\n"
+      << "  --target-check-interval <positive-int>\n"
+      << "                                 Neutral spelling of the BF11 target interval.\n"
+      << "  --bf11-telemetry               Forward opt-in BF11 runtime telemetry.\n"
+      << "  --bellman-ford-telemetry       Alias for --bf11-telemetry.\n"
       << "  --max-sssp-iters <int>         Forwarded to pathfinder.\n"
       << "  --net-limit <count>            Forwarded to pathfinder.\n"
       << "  --parallel-net-workers <count> Forwarded to pathfinder; 0 enables automatic selection.\n"
@@ -240,7 +291,9 @@ Options parse_args(int argc, char** argv) {
   std::string delta_benchmark_weights;
   bool delta_benchmark_weight_seed_provided = false;
   bool delta_telemetry = false;
+  bool bf11_telemetry = false;
   bool delta_specific_option_provided = false;
+  bool bf11_specific_option_provided = false;
   std::string sssp_engine = "delta-step";
 
   for (int i = 3; i < argc; ++i) {
@@ -271,16 +324,22 @@ Options parse_args(int argc, char** argv) {
       options.allow_unrouted = false;
     } else if (option == "--sssp-engine") {
       sssp_engine = require_value("--sssp-engine");
-      if (sssp_engine != "delta-step" &&
+      if (sssp_engine != "delta" && sssp_engine != "delta-step" &&
           sssp_engine != "delta-stepping" &&
-          sssp_engine != "bellman-ford") {
+          sssp_engine != "delta_stepping" &&
+          sssp_engine != "bellman-ford" &&
+          sssp_engine != "bellman_ford" && sssp_engine != "bf11" &&
+          sssp_engine != "bellman-ford-11" &&
+          sssp_engine != "bellman_ford_11") {
         throw std::runtime_error(
             "invalid sssp-engine: " + sssp_engine +
-            " (expected delta-step, delta-stepping, or bellman-ford)");
+            " (expected delta-step/delta-stepping or bellman-ford/bf11)");
       }
       options.pathfinder_args.push_back(option);
       options.pathfinder_args.push_back(sssp_engine);
-    } else if (option == "--delta-force-legacy-parent") {
+    } else if (option == "--use-delta-step" ||
+               option == "--delta-force-legacy-parent" ||
+               option == "--delta-force-generic") {
       options.pathfinder_args.push_back(option);
       delta_specific_option_provided = true;
     } else if (option == "--delta-telemetry") {
@@ -289,6 +348,19 @@ Options parse_args(int argc, char** argv) {
         delta_telemetry = true;
       }
       delta_specific_option_provided = true;
+    } else if (option == "--bf11-telemetry" ||
+               option == "--bellman-ford-telemetry") {
+      if (!bf11_telemetry) {
+        options.pathfinder_args.push_back(option);
+        bf11_telemetry = true;
+      }
+      bf11_specific_option_provided = true;
+    } else if (option == "--unbounded" || option == "--bounds" ||
+               option == "--bounded" || option == "--bf11-unbounded" ||
+               option == "--bf11-bounds" ||
+               option == "--no-unbounded-fallback" ||
+               option == "--bf11-no-unbounded-fallback") {
+      options.pathfinder_args.push_back(option);
     } else if (option == "--delta-benchmark-weights") {
       delta_benchmark_weights = require_value("--delta-benchmark-weights");
       options.pathfinder_args.push_back(option);
@@ -301,6 +373,19 @@ Options parse_args(int argc, char** argv) {
       options.pathfinder_args.push_back(option);
       options.pathfinder_args.push_back(seed);
       delta_specific_option_provided = true;
+    } else if (option == "--bbox-margin-x" ||
+               option == "--bbox-margin-y" ||
+               option == "--bf11-bbox-margin-x" ||
+               option == "--bf11-bbox-margin-y") {
+      options.pathfinder_args.push_back(option);
+      options.pathfinder_args.push_back(require_nonnegative_router_integer(
+          require_value(option.c_str()), option.c_str()));
+    } else if (option == "--target-check-interval" ||
+               option == "--bf11-target-check-interval") {
+      options.pathfinder_args.push_back(option);
+      options.pathfinder_args.push_back(require_positive_router_integer(
+          require_value(option.c_str()), option.c_str()));
+      bf11_specific_option_provided = true;
     } else if (option == "--delta" ||
                option == "--delta-multiplier" ||
                option == "--delta-controller" ||
@@ -335,10 +420,19 @@ Options parse_args(int argc, char** argv) {
         "--delta-benchmark-weight-seed requires "
         "--delta-benchmark-weights mixed");
   }
-  if (sssp_engine == "bellman-ford" && delta_specific_option_provided) {
+  const bool bellman_ford_selected =
+      sssp_engine == "bellman-ford" || sssp_engine == "bellman_ford" ||
+      sssp_engine == "bf11" || sssp_engine == "bellman-ford-11" ||
+      sssp_engine == "bellman_ford_11";
+  if (bellman_ford_selected && delta_specific_option_provided) {
     throw std::runtime_error(
         "Delta-Stepping options cannot be used with "
         "--sssp-engine bellman-ford");
+  }
+  if (!bellman_ford_selected && bf11_specific_option_provided) {
+    throw std::runtime_error(
+        "BF11 target-check/telemetry options cannot be used with "
+        "--sssp-engine delta-step");
   }
   return options;
 }
