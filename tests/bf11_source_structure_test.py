@@ -54,8 +54,8 @@ def main() -> None:
     )
     atomic_relax = function_body(
         source,
-        "__device__ __forceinline__ AtomicRelaxResult atomic_relax_strict(",
-        "__device__ __forceinline__ float effective_edge_weight(",
+        "__device__ BF11_FORCEINLINE AtomicRelaxResult atomic_relax_strict(",
+        "__device__ BF11_FORCEINLINE float effective_edge_weight(",
     )
     require(
         "unsigned long long old_state = coherent_atomic_load(address);"
@@ -81,8 +81,8 @@ def main() -> None:
     )
     coherent_load = function_body(
         source,
-        "__device__ __forceinline__ unsigned long long coherent_atomic_load(",
-        "__device__ __forceinline__ AtomicRelaxResult atomic_relax_strict(",
+        "__device__ BF11_FORCEINLINE unsigned long long coherent_atomic_load(",
+        "__device__ BF11_FORCEINLINE AtomicRelaxResult atomic_relax_strict(",
     )
     require(
         "BF11_FORCE_CAS_ATOMIC_LOAD" in coherent_load

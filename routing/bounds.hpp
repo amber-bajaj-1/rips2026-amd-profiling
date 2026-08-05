@@ -82,7 +82,7 @@ inline bool coordinate_in_bounds(std::int32_t x,
 // occur as a pair.
 #if defined(__HIPCC__)
 #define ROUTING_HOST_DEVICE __host__ __device__
-#define ROUTING_FORCEINLINE __forceinline__
+#define ROUTING_FORCEINLINE inline __attribute__((always_inline))
 #else
 #define ROUTING_HOST_DEVICE
 #define ROUTING_FORCEINLINE inline

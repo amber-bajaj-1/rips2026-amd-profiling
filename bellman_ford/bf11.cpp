@@ -693,26 +693,28 @@ void aggregate_query_work_telemetry(DeviceWorkspace& workspace,
       std::memory_order_relaxed);
 }
 
-__device__ __forceinline__ Offset logical_thread_id() {
+#define BF11_FORCEINLINE inline __attribute__((always_inline))
+
+__device__ BF11_FORCEINLINE Offset logical_thread_id() {
   return (static_cast<Offset>(blockIdx.x) +
           static_cast<Offset>(blockIdx.y) * static_cast<Offset>(gridDim.x)) *
              static_cast<Offset>(blockDim.x) +
          static_cast<Offset>(threadIdx.x);
 }
 
-__host__ __device__ __forceinline__ unsigned long long pack_state(
+__host__ __device__ BF11_FORCEINLINE unsigned long long pack_state(
     unsigned int distance_bits,
     unsigned int predecessor) {
   return (static_cast<unsigned long long>(distance_bits) << 32) |
          static_cast<unsigned long long>(predecessor);
 }
 
-__host__ __device__ __forceinline__ unsigned int state_distance_bits(
+__host__ __device__ BF11_FORCEINLINE unsigned int state_distance_bits(
     unsigned long long state) {
   return static_cast<unsigned int>(state >> 32);
 }
 
-__device__ __forceinline__ float state_distance(unsigned long long state) {
+__device__ BF11_FORCEINLINE float state_distance(unsigned long long state) {
   return __uint_as_float(state_distance_bits(state));
 }
 
@@ -723,7 +725,7 @@ float host_state_distance(unsigned long long state) {
   return value;
 }
 
-__device__ __forceinline__ bool finite_device(float value) {
+__device__ BF11_FORCEINLINE bool finite_device(float value) {
   return value == value && value != INFINITY && value != -INFINITY;
 }
 
@@ -731,7 +733,7 @@ __device__ __forceinline__ bool finite_device(float value) {
 // source from CSR row offsets instead of retaining a 4-byte source sidecar for
 // every edge. This saves substantial device memory and upload bandwidth on the
 // production graph while preserving original CSR edge IDs.
-__device__ __forceinline__ Index source_for_edge(
+__device__ BF11_FORCEINLINE Index source_for_edge(
     const DeviceOffset* rowptr,
     Offset rows,
     DeviceOffset edge) {
@@ -750,7 +752,7 @@ __device__ __forceinline__ Index source_for_edge(
              : static_cast<Index>(-1);
 }
 
-__device__ __forceinline__ bool node_admitted(
+__device__ BF11_FORCEINLINE bool node_admitted(
     const DeviceGraph& graph,
     Index node,
     const BellmanFord11BoundingBox& bounds) {
@@ -766,7 +768,7 @@ struct AtomicRelaxResult {
   bool first_discovery = false;
 };
 
-__device__ __forceinline__ unsigned long long coherent_atomic_load(
+__device__ BF11_FORCEINLINE unsigned long long coherent_atomic_load(
     unsigned long long* address) {
 #if defined(__has_builtin)
 #if !defined(BF11_FORCE_CAS_ATOMIC_LOAD) && __has_builtin(__hip_atomic_load)
@@ -780,7 +782,7 @@ __device__ __forceinline__ unsigned long long coherent_atomic_load(
 #endif
 }
 
-__device__ __forceinline__ AtomicRelaxResult atomic_relax_strict(
+__device__ BF11_FORCEINLINE AtomicRelaxResult atomic_relax_strict(
     unsigned long long* address,
     float candidate,
     DeviceOffset predecessor) {
@@ -800,7 +802,7 @@ __device__ __forceinline__ AtomicRelaxResult atomic_relax_strict(
   return {};
 }
 
-__device__ __forceinline__ float effective_edge_weight(
+__device__ BF11_FORCEINLINE float effective_edge_weight(
     float edge_value,
     float base_cost,
     float dynamic_cost) {
@@ -812,7 +814,7 @@ __device__ __forceinline__ float effective_edge_weight(
 }
 
 template <bool CollectTelemetry>
-__device__ __forceinline__ unsigned int relax_edge(
+__device__ BF11_FORCEINLINE unsigned int relax_edge(
     const DeviceGraph& graph,
     Offset edge,
     float from_distance,
@@ -877,6 +879,8 @@ __device__ __forceinline__ unsigned int relax_edge(
   }
   return __float_as_uint(candidate);
 }
+
+#undef BF11_FORCEINLINE
 
 __global__ void clear_state_kernel(Offset rows,
                                    unsigned long long* best_state,

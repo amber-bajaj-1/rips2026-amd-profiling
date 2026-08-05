@@ -196,6 +196,10 @@ test: test-host
 
 test-host:
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+		tests/routing_bounds_hip_qualifiers_test.cpp \
+		-o /tmp/rips-routing-bounds-hip-qualifiers-test
+	/tmp/rips-routing-bounds-hip-qualifiers-test
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
 		tests/routing_bounds_test.cpp -o /tmp/rips-routing-bounds-test
 	/tmp/rips-routing-bounds-test
 	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
