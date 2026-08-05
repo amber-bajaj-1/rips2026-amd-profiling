@@ -1,7 +1,7 @@
-# RIPS AMD PathFinder Profiling
+# RIPS AMD SSSP Profiling
 
 This repository builds one GPU `pathfinder` executable with two runtime SSSP
-engines: Delta-Stepping (the default) and Bellman-Ford.
+engines: Delta-Stepping and Bellman-Ford. 'pathfinder' runs one SSSP calculation for each net in the benchmarks. 
 
 ## 1. Set up the AUP workspace
 
