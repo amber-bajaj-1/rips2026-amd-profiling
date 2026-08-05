@@ -7,13 +7,14 @@
 // Expected generated schema header:
 //   PhysicalNetlist.capnp.h
 //
-// Example compile command:
-//   g++ -std=c++17 -O3 \
-//     -I<generated-schema-dir> \
-//     post-process/routes_to_phys.cpp \
-//     <generated-schema-dir>/PhysicalNetlist.capnp.c++ \
-//     -lcapnp -lkj -lz \
-//     -o routes_to_phys
+/* Example compile command:
+   g++ -std=c++17 -O3 \
+     -I<generated-schema-dir> \
+     post-process/routes_to_phys.cpp \
+     <generated-schema-dir>/PhysicalNetlist.capnp.c++ \
+     -lcapnp -lkj -lz \
+     -o routes_to_phys
+*/
 
 #include "PhysicalNetlist.capnp.h"
 #include "../pre-process/gzip_io.hpp"

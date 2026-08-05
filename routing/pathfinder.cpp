@@ -10,14 +10,15 @@
 // pass intentionally ignores present/historical congestion and uses the
 // runtime-selected GPU SSSP implementation.
 //
-// Example GPU build from the repository root:
-//   hipcc -std=c++17 -O3 -x hip \
-//     routing/pathfinder.cpp \
-//     routing/csr_artifact.cpp \
-//     delta_stepping/delta_stepping.cpp \
-//     bellman_ford/bf11.cpp \
-//     -pthread \
-//     -o pathfinder
+/* Example GPU build from the repository root:
+   hipcc -std=c++17 -O3 -x hip \
+     routing/pathfinder.cpp \
+     routing/csr_artifact.cpp \
+     delta_stepping/delta_stepping.cpp \
+     bellman_ford/bf11.cpp \
+     -pthread \
+     -o pathfinder
+*/
 // Add -DPATHFINDER_ENABLE_ROCTX -lrocprofiler-sdk-roctx for profiler ranges.
 //
 // Run:

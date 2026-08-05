@@ -27,24 +27,25 @@
 //   PhysicalNetlist.capnp.h
 //   LogicalNetlist.capnp.h
 //
-// Example compile command, after generating the C++ Cap'n Proto schema files:
-//
-//   g++ -std=c++17 -O3 \
-//     -I<generated-schema-dir> \
-//     pre-process/interchange_to_csr.cpp \
-//     pre-process/device_routing_graph.cpp \
-//     <generated-schema-dir>/PhysicalNetlist.capnp.c++ \
-//     <generated-schema-dir>/LogicalNetlist.capnp.c++ \
-//     <generated-schema-dir>/References.capnp.c++ \
-//     -lcapnp -lkj -lz \
-//     -o interchange_to_csr
-//
-// Example use:
-//
-//   ./interchange_to_csr benchmarks/xcvu3p.full-poc-base-wire.devicegraph \
-//     benchmarks/vtr_mcml_unrouted.phys \
-//     benchmarks/vtr_mcml.netlist \
-//     work/vtr_mcml_fpga.csrbin
+/* Example compile command, after generating the C++ Cap'n Proto schema files:
+
+   g++ -std=c++17 -O3 \
+     -I<generated-schema-dir> \
+     pre-process/interchange_to_csr.cpp \
+     pre-process/device_routing_graph.cpp \
+     <generated-schema-dir>/PhysicalNetlist.capnp.c++ \
+     <generated-schema-dir>/LogicalNetlist.capnp.c++ \
+     <generated-schema-dir>/References.capnp.c++ \
+     -lcapnp -lkj -lz \
+     -o interchange_to_csr
+
+   Example use:
+
+   ./interchange_to_csr benchmarks/xcvu3p.full-poc-base-wire.devicegraph \
+     benchmarks/vtr_mcml_unrouted.phys \
+     benchmarks/vtr_mcml.netlist \
+     work/vtr_mcml_fpga.csrbin
+*/
 
 #include "LogicalNetlist.capnp.h"
 #include "PhysicalNetlist.capnp.h"

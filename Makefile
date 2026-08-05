@@ -228,6 +228,7 @@ test-host:
 		-o /tmp/rips-pathfinder-host-syntax-test.o
 	python3 tests/artifact_sidecar_source_test.py
 	python3 tests/bf11_source_structure_test.py
+	python3 tests/comment_continuation_source_test.py
 	python3 tests/delta_routing_bounds_source_test.py
 
 test-hip:

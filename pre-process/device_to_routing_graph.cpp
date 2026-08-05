@@ -4,18 +4,19 @@
 // device, tile bounds, and node-bounds policy. This executable converts that
 // data into a versioned RIPSDRG1 artifact consumed by interchange_to_csr.
 //
-// Example build:
-//   g++ -std=c++17 -O3 -I<generated-schema-dir> \
-//     pre-process/device_to_routing_graph.cpp \
-//     pre-process/device_routing_graph.cpp \
-//     <generated-schema-dir>/DeviceResources.capnp.c++ \
-//     <generated-schema-dir>/LogicalNetlist.capnp.c++ \
-//     <generated-schema-dir>/References.capnp.c++ \
-//     -lcapnp -lkj -lz -o device_to_routing_graph
-//
-// Example use:
-//   ./device_to_routing_graph benchmarks/xcvu3p.device \
-//     benchmarks/xcvu3p.full-poc-base-wire.devicegraph --full-device
+/* Example build:
+   g++ -std=c++17 -O3 -I<generated-schema-dir> \
+     pre-process/device_to_routing_graph.cpp \
+     pre-process/device_routing_graph.cpp \
+     <generated-schema-dir>/DeviceResources.capnp.c++ \
+     <generated-schema-dir>/LogicalNetlist.capnp.c++ \
+     <generated-schema-dir>/References.capnp.c++ \
+     -lcapnp -lkj -lz -o device_to_routing_graph
+
+   Example use:
+   ./device_to_routing_graph benchmarks/xcvu3p.device \
+     benchmarks/xcvu3p.full-poc-base-wire.devicegraph --full-device
+*/
 
 #include "DeviceResources.capnp.h"
 #include "device_routing_graph.hpp"

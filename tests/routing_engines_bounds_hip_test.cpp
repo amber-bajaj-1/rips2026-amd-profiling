@@ -1,11 +1,12 @@
-// Focused BF11/Delta-Stepping routing-bounds parity test (AMD HIP GPU).
-// Build from the repository root:
-//   hipcc -std=c++17 -O2 -x hip -DBF11_NO_MAIN -I. \
-//     tests/routing_engines_bounds_hip_test.cpp \
-//     delta_stepping/delta_stepping.cpp bellman_ford/bf11.cpp \
-//     -pthread -o /tmp/rips-routing-engines-bounds-hip-test
-// Run on a ROCm host with a visible AMD GPU:
-//   /tmp/rips-routing-engines-bounds-hip-test
+/* Focused BF11/Delta-Stepping routing-bounds parity test (AMD HIP GPU).
+   Build from the repository root:
+   hipcc -std=c++17 -O2 -x hip -DBF11_NO_MAIN -I. \
+     tests/routing_engines_bounds_hip_test.cpp \
+     delta_stepping/delta_stepping.cpp bellman_ford/bf11.cpp \
+     -pthread -o /tmp/rips-routing-engines-bounds-hip-test
+   Run on a ROCm host with a visible AMD GPU:
+   /tmp/rips-routing-engines-bounds-hip-test
+*/
 
 #include "../bellman_ford/bf11.hpp"
 #include "../delta_stepping/delta_stepping.hpp"
