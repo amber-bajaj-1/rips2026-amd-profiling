@@ -1,16 +1,9 @@
-# RIPS AMD congestion-free PathFinder profiling
+# RIPS AMD SSSP profiling
 
-This repository is a focused extraction of the congestion-free routing path.
-It builds one GPU `pathfinder` executable with exactly two runtime SSSP
-engines:
+This repository implements two SSSP kernels and runs all-source SSSP on the benchmarks from the FPGA24 Routing Contest (without accounting for congestion): 
 
-- BF11 Bellman-Ford (`bellman-ford` or `bf11`)
-- generic bucketed Delta-Stepping (`delta-step` or `delta-stepping`)
-
-Both engines route the same multi-source/multi-target PathFinder queries and
-use the same coordinate bounds, certificate checks, route reconstruction, and
-bounded-to-unbounded fallback policy. Unit BFS and the other standalone
-Bellman-Ford experiments are intentionally outside this profiling target.
+- Bellman-Ford (`bellman-ford` or `bf11`)
+- Delta-Stepping (`delta-step` or `delta-stepping`)
 
 ## Set up and build
 
@@ -27,6 +20,21 @@ make device-graph
 
 Both engines are compiled into the same executable, so engine selection does
 not require a rebuild.
+
+## Quick start 
+Bounding boxes with margins x=2 and y=14 are used by default. To run the bounding box versions of delta stepping and bellman ford, use: 
+
+```bash
+make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
+make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
+```
+
+To run with profiling, use: 
+
+```bash
+make profile BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
+make profile BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
+```
 
 ## Coordinate bounds and CSR v3
 
