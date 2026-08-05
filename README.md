@@ -32,8 +32,8 @@ make run BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
 To run with profiling, use: 
 
 ```bash
-make profile-all BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
-make profile-all BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
+make profile BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=delta-step
+make profile BENCHMARK=logicnets_jscl PATHFINDER_SSSP_ENGINE=bf11
 ```
 
 ## Coordinate bounds and CSR v3
